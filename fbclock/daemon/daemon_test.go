@@ -51,6 +51,8 @@ func newTestDaemon(cfg *Config, stats stats.Server) *Daemon {
 		state:       newDaemonState(cfg.RingSize),
 		l:           &testLogger{samples: []*LogSample{}},
 		DataFetcher: &SockFetcher{},
+		// what New sets on a PTP host
+		sources: fbclock.SourcePTP | fbclock.SourcePRTC | fbclock.SourceNTP,
 	}
 	return s
 }
@@ -1089,20 +1091,24 @@ func dataSections(path string) (*fbclock.DataFileSnapshot, map[string]fbclock.Da
 }
 
 func TestOpenDataV3(t *testing.T) {
+	const ptpHost = fbclock.SourcePTP | fbclock.SourcePRTC | fbclock.SourceNTP
 	testCases := []struct {
 		name        string
+		sources     fbclock.Sources
 		v2, v3      bool
 		failOpen    bool   // a directory where the file goes
 		wantSources uint32 // 0: no file
 	}{
-		{name: "all sections with -v3", v2: true, v3: true, wantSources: uint32(fbclock.SourcePTP | fbclock.SourcePRTC | fbclock.SourceNTP)},
-		{name: "all sections with -v3, -v2 off", v3: true, wantSources: uint32(fbclock.SourcePTP | fbclock.SourcePRTC | fbclock.SourceNTP)},
-		{name: "no file with -v3 off", v2: true},
-		{name: "nil when the open fails", v2: true, v3: true, failOpen: true},
+		{name: "PTP host: ptp, prtc and ntp", sources: ptpHost, v2: true, v3: true, wantSources: 0x7},
+		{name: "PTP host, -v2 off: still all three", sources: ptpHost, v3: true, wantSources: 0x7},
+		{name: "no PTP: ntp only", sources: fbclock.SourceNTP, v2: true, v3: true, wantSources: 0x4},
+		{name: "no file with -v3 off", sources: ptpHost, v2: true},
+		{name: "nil when the open fails", sources: ptpHost, v2: true, v3: true, failOpen: true},
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestDaemon(&Config{RingSize: 1, Interval: time.Second, EnableDataV2: tc.v2, EnableDataV3: tc.v3}, stats.NewStats())
+			s.sources = tc.sources
 			path := filepath.Join(t.TempDir(), "data")
 			if tc.failOpen {
 				require.NoError(t, os.Mkdir(path, 0o755))
@@ -1255,6 +1261,81 @@ func TestPopulatePTPDataV3(t *testing.T) {
 			if tc.clockID == unix.CLOCK_REALTIME {
 				require.Zero(t, realtimeReads)
 			}
+		})
+	}
+}
+
+// withPTPDevice points New and Run's re-check at path until t ends.
+func withPTPDevice(t *testing.T, path string) {
+	old := ptpDevicePath
+	ptpDevicePath = path
+	t.Cleanup(func() { ptpDevicePath = old })
+}
+
+func TestNewWithoutPTP(t *testing.T) {
+	// noPHCIface doesn't exist, so it has no PHC
+	const noPHCIface = "fbclock-test"
+	dir := t.TempDir()
+	present, absent := filepath.Join(dir, "ptp"), filepath.Join(dir, "none")
+	require.NoError(t, os.WriteFile(present, nil, 0o600))
+	for _, tc := range []struct {
+		name    string
+		device  string
+		v3      bool
+		wantErr string // none: New runs without PTP
+	}{
+		{name: "no device", device: absent, v3: true},
+		{name: "device but no PHC", device: present, v3: true},
+		// the error names what's missing, and the PHC is only looked for once the device is there
+		{name: "no device, v3 off", device: absent, wantErr: "nothing to write without PTP and -v3: stat " + absent},
+		{name: "no PHC, v3 off", device: present, wantErr: `nothing to write without PTP and -v3: finding PHC device for "fbclock-test"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Iface: noPHCIface, RingSize: 1, Interval: time.Second, EnableDataV2: true, EnableDataV3: tc.v3}
+			st := stats.NewStats()
+			withPTPDevice(t, tc.device)
+			s, err := New(cfg, st, &testLogger{})
+			if tc.wantErr != "" {
+				require.ErrorContains(t, err, tc.wantErr)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, fbclock.SourceNTP, s.sources)
+			// none of PTP's counters, such as m_ns, are seeded
+			require.Empty(t, st.Get())
+		})
+	}
+}
+
+// withRecheckInterval shortens Run's re-check of PTP until t ends.
+func withRecheckInterval(t *testing.T, d time.Duration) {
+	old := ptpRecheckInterval
+	ptpRecheckInterval = d
+	t.Cleanup(func() { ptpRecheckInterval = old })
+}
+
+func TestWaitForPTP(t *testing.T) {
+	dir := t.TempDir()
+	present := filepath.Join(dir, "ptp")
+	require.NoError(t, os.WriteFile(present, nil, 0o600))
+	for _, tc := range []struct {
+		name   string
+		device string
+	}{
+		{name: "no device", device: filepath.Join(dir, "none")},
+		// the link is there but -iface has no PHC, so New still wouldn't run PTP
+		{name: "device but no PHC", device: present},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withPTPDevice(t, tc.device)
+			withRecheckInterval(t, time.Millisecond)
+			s := newTestDaemon(&Config{Iface: "fbclock-test", RingSize: 1, Interval: time.Second}, stats.NewStats())
+			require.False(t, s.ptpAvailable())
+			// it keeps checking and only returns, without an error, once ctx is done
+			ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+			defer cancel()
+			require.NoError(t, s.waitForPTP(ctx))
+			require.Error(t, ctx.Err(), "returned before ctx was done")
 		})
 	}
 }

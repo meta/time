@@ -69,6 +69,15 @@ var lastLeapSmearing = clockSmearing{
 	utcOffsetPostS: utcOffsetS,
 }
 
+var (
+	// ptpDevicePath is where New and Run's re-check look for the PTP device; tests point it
+	// elsewhere.
+	ptpDevicePath = ManagedPTPDevicePath
+	// ptpRecheckInterval is how often a host without PTP checks for it again: the pace at
+	// which systemd restarts the sidecar after it exits. Tests shorten it.
+	ptpRecheckInterval = 10 * time.Second
+)
+
 // DataPoint is what we store in DataPoint ring buffer
 type DataPoint struct {
 	// IngressTimeNS represents ingress time in NanoSeconds
@@ -137,6 +146,9 @@ type Daemon struct {
 	state *daemonState
 	stats stats.Server
 	l     Logger
+
+	// sources is what this host offers, decided once in New; v3's header lists exactly these
+	sources fbclock.Sources
 
 	// function to get PHC time from configured PHC device
 	getPHCTime func() (time.Time, error)
@@ -221,7 +233,8 @@ func (s *Daemon) setupPHC(iface string) error {
 	return nil
 }
 
-// New creates new fbclock-daemon
+// New creates new fbclock-daemon. It runs PTP only where ManagedPTPDevicePath exists and
+// cfg.Iface has a PHC, and offers ntp everywhere.
 func New(cfg *Config, stats stats.Server, l Logger) (*Daemon, error) {
 	// we need at least 1m of samples for aggregate values
 	effectiveRingSize := minRingSize(cfg.RingSize, cfg.Interval)
@@ -237,9 +250,22 @@ func New(cfg *Config, stats stats.Server, l Logger) (*Daemon, error) {
 		s.DataFetcher = &SockFetcher{}
 	}
 
-	if err := s.setupPHC(cfg.Iface); err != nil {
-		return nil, err
+	// chrony runs on every host the sidecar runs on
+	s.sources = fbclock.SourceNTP
+	// the device marks a PTP host, which a PHC alone doesn't: non-PTP NICs have one too
+	_, err := os.Stat(ptpDevicePath)
+	if err == nil {
+		err = s.setupPHC(cfg.Iface)
 	}
+	if err != nil {
+		if !cfg.EnableDataV3 {
+			return nil, fmt.Errorf("nothing to write without PTP and -v3: %w", err)
+		}
+		log.Infof("running without PTP, writing only ntp to %s: %v", fbclock.DataPath, err)
+		return s, nil
+	}
+	s.sources |= fbclock.SourcePTP | fbclock.SourcePRTC
+	log.Infof("running with PTP: %s exists and %s has a PHC", ptpDevicePath, cfg.Iface)
 	// calculated values
 	s.stats.SetCounter("m_ns", 0)
 	s.stats.SetCounter("w_ns", 0)
@@ -598,17 +624,19 @@ func (s *Daemon) meanCoeffPPBV3(prev, cur *fbclock.DataClock) int64 {
 	return s.state.getMeanCoeffPPBV3(coefPPB)
 }
 
-// openDataV3 opens the v3 file at path for -v3. It returns nil when -v3 is off or
-// the open fails: v3 must never stop the daemon.
+// openDataV3 opens the v3 file at path for -v3, with a section for each of the host's sources.
+// It returns nil when -v3 is off or the open fails, which stops only a host without PTP.
 func (s *Daemon) openDataV3(path string) *fbclock.DataFile {
 	if !s.cfg.EnableDataV3 {
 		return nil
 	}
-	v3, err := fbclock.OpenFBClockDataCustom(path, map[fbclock.Sources]fbclock.DataSectionConfig{
-		fbclock.SourcePTP:  {},
-		fbclock.SourcePRTC: {},
-		fbclock.SourceNTP:  {},
-	})
+	sections := map[fbclock.Sources]fbclock.DataSectionConfig{}
+	for _, source := range []fbclock.Sources{fbclock.SourcePTP, fbclock.SourcePRTC, fbclock.SourceNTP} {
+		if s.sources&source != 0 {
+			sections[source] = fbclock.DataSectionConfig{}
+		}
+	}
+	v3, err := fbclock.OpenFBClockDataCustom(path, sections)
 	if err != nil {
 		log.Errorf("not writing fbclock data v3: %v", err)
 		return nil
@@ -876,8 +904,50 @@ func sdNotify() error {
 	return nil
 }
 
-// Run a daemon
+// ptpAvailable reports whether New would now run PTP: the device exists and -iface's PHC opens.
+func (s *Daemon) ptpAvailable() bool {
+	if _, err := os.Stat(ptpDevicePath); err != nil {
+		return false
+	}
+	return s.setupPHC(s.cfg.Iface) == nil
+}
+
+// waitForPTP checks every ptpRecheckInterval whether New would now run PTP, and returns an
+// error once it would, so the process exits and systemd's restart runs PTP. It returns nil if
+// ctx is done first.
+func (s *Daemon) waitForPTP(ctx context.Context) error {
+	ticker := time.NewTicker(ptpRecheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+		}
+		if s.ptpAvailable() {
+			return errors.New("PTP is available now: exiting so the restart runs it")
+		}
+	}
+}
+
+// Run writes v3's ntp on every host and, where New found PTP, everything PTP writes.
 func (s *Daemon) Run(ctx context.Context) error {
+	// v3 isn't closed: the loops write to its mapping until the process exits
+	v3 := s.openDataV3(fbclock.DataPath)
+	if v3 != nil {
+		go s.populateNTPDataV3(ctx, &ChronyFetcher{}, v3)
+	}
+	if s.sources&fbclock.SourcePTP == 0 {
+		if v3 == nil {
+			return errors.New("nothing to write without PTP: fbclock data v3 didn't open")
+		}
+		if err := sdNotify(); err != nil {
+			log.Error(err)
+		}
+		// PTP can come later: the link once udev makes it, the PHC once it opens
+		return s.waitForPTP(ctx)
+	}
+
 	shm, err := fbclock.OpenFBClockSHMv1()
 	if err != nil {
 		return fmt.Errorf("opening fbclock shm: %w", err)
@@ -888,10 +958,8 @@ func (s *Daemon) Run(ctx context.Context) error {
 		go s.runLinearizabilityTests(ctx)
 	}
 
-	// v3 isn't closed: the loops below write to its mapping until the process exits
-	if v3 := s.openDataV3(fbclock.DataPath); v3 != nil {
+	if v3 != nil {
 		go s.populatePTPDataV3(v3)
-		go s.populateNTPDataV3(ctx, &ChronyFetcher{}, v3)
 	}
 
 	if s.cfg.EnableDataV2 {
