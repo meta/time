@@ -54,7 +54,7 @@ func main() {
 	flag.StringVar(&cfg.PTPClientAddress, "ptpclientaddress", ptp.PTP4lSock, "Path to PTP client management address")
 	flag.BoolVar(&cfg.SPTP, "sptp", false, "Connect to sptp instead ot ptp4l")
 	flag.Float64Var(&cfg.MaxDriftRate, "max-drift-rate", daemon.DefaultMaxDriftRatePPM, "Maximum drift rate in PPM, the floor for chronyd's holdover multiplier")
-	flag.IntVar(&monitoringPort, "monitoringport", 21039, "Port to run monitoring server on")
+	flag.IntVar(&monitoringPort, "monitoringport", 21041, "Port to run monitoring server on")
 	flag.IntVar(&cfg.RingSize, "buffer", daemon.MathDefaultHistory, "Size of ring buffers, must be at least size of largest num of samples used in M and W formulas")
 	flag.StringVar(&cfg.Math.M, "m", daemon.MathDefaultM, "Math expression for M")
 	flag.StringVar(&cfg.Math.W, "w", daemon.MathDefaultW, "Math expression for W")
