@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"math"
 	"net"
 	"os"
 	"sync"
@@ -204,6 +205,93 @@ func delayReq(t *testing.T, client ptp.PortIdentity, offset uint16) []byte {
 	n, err := ptp.BytesTo(req, buf)
 	require.NoError(t, err)
 	return buf[:n]
+}
+
+func grantRequest(t *testing.T, client ptp.PortIdentity, interval ptp.LogInterval, duration uint32) []byte {
+	size := binary.Size(ptp.Header{}) + binary.Size(ptp.PortIdentity{}) + binary.Size(ptp.RequestUnicastTransmissionTLV{})
+	req := &ptp.Signaling{
+		Header: ptp.Header{
+			SdoIDAndMsgType:    ptp.NewSdoIDAndMsgType(ptp.MessageSignaling, 0),
+			Version:            ptp.Version,
+			MessageLength:      uint16(size), //#nosec G115
+			FlagField:          ptp.FlagUnicast,
+			SourcePortIdentity: client,
+			LogMessageInterval: 0x7f,
+		},
+		TargetPortIdentity: ptp.PortIdentity{PortNumber: 0xffff, ClockIdentity: 0xffffffffffffffff},
+		TLVs: []ptp.TLV{&ptp.RequestUnicastTransmissionTLV{
+			TLVHead: ptp.TLVHead{
+				TLVType:     ptp.TLVRequestUnicastTransmission,
+				LengthField: uint16(binary.Size(ptp.RequestUnicastTransmissionTLV{}) - binary.Size(ptp.TLVHead{})), //#nosec G115
+			},
+			MsgTypeAndReserved:    ptp.NewUnicastMsgTypeAndFlags(ptp.MessageAnnounce, 0),
+			LogInterMessagePeriod: interval,
+			DurationField:         duration,
+		}},
+	}
+	buf := make([]byte, size+ptp.TrailingBytes)
+	n, err := ptp.BytesTo(req, buf)
+	require.NoError(t, err)
+	return buf[:n]
+}
+
+func TestSignalingDeniedRenewalKeepsSubscription(t *testing.T) {
+	c := &Config{
+		clockIdentity: ptp.ClockIdentity(1234),
+		StaticConfig:  StaticConfig{TimestampType: timestamp.SW, SendWorkers: 10, QueueSize: 10},
+		DynamicConfig: DynamicConfig{MinSubInterval: time.Second, MaxSubDuration: time.Hour},
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	t.Cleanup(cancel)
+	s := &Server{Config: c, Stats: stats.NewJSONStats(1), sw: make([]*sendWorker, c.SendWorkers), ctx: ctx, cancel: cancel}
+	for i := range s.sw {
+		s.sw[i] = newSendWorker(i, c, s.Stats)
+	}
+
+	// left open: closing it would spin handleGeneralMessages on read errors
+	gFD := loopbackSocket(t)
+	serverAddr, err := unix.Getsockname(gFD)
+	require.NoError(t, err)
+	go s.handleGeneralMessages(gFD)
+
+	clientFD := loopbackSocket(t)
+	defer unix.Close(clientFD)
+	clientAddr, err := unix.Getsockname(clientFD)
+	require.NoError(t, err)
+	client := ptp.PortIdentity{ClockIdentity: 5678, PortNumber: 1}
+	worker := s.findWorker(client, 0)
+
+	nextGrant := func() *ptp.GrantUnicastTransmissionTLV {
+		select {
+		case g := <-worker.signalingQueue:
+			return g.Signaling().TLVs[0].(*ptp.GrantUnicastTransmissionTLV)
+		case <-time.After(time.Second):
+			t.Fatal("no grant sent")
+			return nil
+		}
+	}
+
+	require.NoError(t, unix.Sendto(clientFD, grantRequest(t, client, 0, 60), 0, serverAddr))
+	require.Equal(t, uint32(60), nextGrant().DurationField)
+	var sc *SubscriptionClient
+	require.Eventually(t, func() bool {
+		sc = worker.FindSubscription(client, ptp.MessageAnnounce)
+		return sc != nil && sc.Running()
+	}, time.Second, 10*time.Millisecond)
+
+	// renewal from another port, faster than MinSubInterval and longer than MaxSubDuration
+	otherFD := loopbackSocket(t)
+	defer unix.Close(otherFD)
+	require.NoError(t, unix.Sendto(otherFD, grantRequest(t, client, -7, math.MaxUint32), 0, serverAddr))
+	require.Equal(t, uint32(0), nextGrant().DurationField, "the renewal must be denied")
+
+	sc.Lock()
+	interval, expire, gclisa := sc.interval, sc.expire, sc.gclisa
+	sc.Unlock()
+	require.Equal(t, time.Second, interval, "a denied renewal must not change the interval")
+	require.LessOrEqual(t, time.Until(expire), time.Minute, "a denied renewal must not extend the subscription")
+	require.Equal(t, timestamp.SockaddrToPort(clientAddr), timestamp.SockaddrToPort(gclisa), "a denied renewal must not move the subscription")
+	require.True(t, sc.Running())
 }
 
 func TestStartEventListener(t *testing.T) {

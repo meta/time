@@ -429,6 +429,9 @@ func (s *Server) handleGeneralMessages(gFd int) {
 
 					switch signalingType {
 					case ptp.MessageAnnounce, ptp.MessageSync, ptp.MessageDelayResp:
+						// Decide before touching the subscription: a denied renewal must not
+						// change the interval, expiry or address of a running one
+						withinLimits := intervalt >= s.Config.MinSubInterval && durationt <= s.Config.MaxSubDuration && s.ctx.Err() == nil
 						worker = s.findWorker(signaling.SourcePortIdentity, 0)
 						sc = worker.FindSubscription(signaling.SourcePortIdentity, signalingType)
 						if sc == nil || !sc.Running() {
@@ -436,7 +439,7 @@ func (s *Server) handleGeneralMessages(gFd int) {
 							eclisa := timestamp.IPToSockaddr(ip, ptp.PortEvent)
 							sc = NewSubscriptionClient(worker.queue, worker.signalingQueue, eclisa, gclisa, signalingType, s.Config, intervalt, expire)
 							worker.RegisterSubscription(signaling.SourcePortIdentity, signalingType, sc)
-						} else {
+						} else if withinLimits {
 							// Update existing subscription data
 							sc.SetExpire(expire)
 							sc.SetInterval(intervalt)
@@ -446,7 +449,7 @@ func (s *Server) handleGeneralMessages(gFd int) {
 						}
 
 						// Reject queries out of limit
-						if intervalt < s.Config.MinSubInterval || durationt > s.Config.MaxSubDuration || s.ctx.Err() != nil {
+						if !withinLimits {
 							sc.sendSignalingGrant(signaling, v.MsgTypeAndReserved, v.LogInterMessagePeriod, 0)
 							continue
 						}
