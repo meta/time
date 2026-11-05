@@ -52,11 +52,8 @@ NTP extension fields ("encrypted EFs") which the receiver appends to its
 parsed extension-field list.
 
 RFC 8915 §5.6 specifies that the Nonce field is "as required by the negotiated
-AEAD algorithm". For AES-SIV-CMAC-256 (AEAD ID 15), chrony sends a 16-octet
-nonce and authenticates it as an S2V component after the packet associated data.
-AES-SIV-CMAC-512 (AEAD ID 17) keeps an empty wire nonce because Tink's
-deterministic AEAD interface does not accept one. For both algorithms, the
-synthetic IV remains the first 16 octets of the Ciphertext field.
+AEAD algorithm". For AES-SIV-CMAC (AEAD IDs 15 and 17) a 16-octet nonce is sent
+and authenticated as an S2V component after the packet associated data.
 */
 
 // AuthenticatorBody is the parsed body of an NTS Authenticator extension field.

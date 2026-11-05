@@ -17,6 +17,7 @@ limitations under the License.
 package nts
 
 import (
+	"encoding/hex"
 	"testing"
 
 	"github.com/facebook/time/ntp/protocol"
@@ -99,34 +100,57 @@ func TestAEADCiphertextTamper(t *testing.T) {
 	}
 }
 
-// TestAEADAESSIVCMAC256Nonce checks compatibility with chrony, which
-// authenticates the wire nonce as an S2V component after the associated data.
-func TestAEADAESSIVCMAC256Nonce(t *testing.T) {
-	a := aeadFor(t, protocol.AEADAESSIVCMAC256).(*aesSIVCMAC256)
-	ad := []byte("associated-data")
-	pt := []byte("secret-extension-fields")
+func TestAEADAESSIVCMACNonce(t *testing.T) {
+	for _, alg := range []protocol.AEADAlgorithm{
+		protocol.AEADAESSIVCMAC256,
+		protocol.AEADAESSIVCMAC512,
+	} {
+		a := aeadFor(t, alg)
+		ad := []byte("associated-data")
+		pt := []byte("secret-extension-fields")
 
-	nonce, ct, err := a.Seal(ad, pt)
-	require.NoError(t, err)
-	require.Len(t, nonce, aesSIVCMAC256GeneratedNonceSize)
+		nonce, ct, err := a.Seal(ad, pt)
+		require.NoError(t, err, "alg %d", alg)
+		require.Len(t, nonce, aesSIVCMACGeneratedNonceSize, "alg %d", alg)
 
-	got, err := a.Open(ad, nonce, ct)
-	require.NoError(t, err)
-	require.Equal(t, pt, got)
+		got, err := a.Open(ad, nonce, ct)
+		require.NoError(t, err, "alg %d", alg)
+		require.Equal(t, pt, got, "alg %d", alg)
 
-	nonce[0] ^= 0xFF
-	_, err = a.Open(ad, nonce, ct)
-	require.Error(t, err)
+		nonce[0] ^= 0xFF
+		_, err = a.Open(ad, nonce, ct)
+		require.Error(t, err, "alg %d", alg)
 
-	_, err = a.Open(ad, nil, ct)
-	require.ErrorIs(t, err, ErrAEADNonceSize)
+		_, err = a.Open(ad, nil, ct)
+		require.ErrorIs(t, err, ErrAEADNonceSize, "alg %d", alg)
+	}
+}
+
+// TestAEADAESSIVCMAC512KnownAnswer opens vectors sealed by OpenSSL 3.5 via
+// pyca/cryptography: AESSIV(key).encrypt(pt, [ad, nonce]).
+func TestAEADAESSIVCMAC512KnownAnswer(t *testing.T) {
+	for n, want := range map[int]string{
+		1:  "538719b7acf499d06faa3f97ad46a0a071bbf38d709bc4d0e62e24a526764e626da8d7c8c319c5",
+		16: "ec1aff8bb6dff4bc42ff6f59971ee65875989e0cb4394efd70181328084e09465cd3e6bf6e767c",
+		32: "3d79487928c1e5bce8c2124bbd9e6a961db227cf741fd08314e828eea332634d832bf612254af1",
+	} {
+		nonce := make([]byte, n)
+		for i := range nonce {
+			nonce[i] = byte(0xa0 + i)
+		}
+		ct, err := hex.DecodeString(want)
+		require.NoError(t, err)
+
+		got, err := aeadFor(t, protocol.AEADAESSIVCMAC512).Open([]byte("associated-data"), nonce, ct)
+		require.NoError(t, err, "nonce %d", n)
+		require.Equal(t, []byte("secret-extension-fields"), got)
+	}
 }
 
 // TestAEADWrongLengthNonce checks that algorithms with fixed nonce
 // requirements reject a nonce of the wrong length with ErrAEADNonceSize.
 func TestAEADWrongLengthNonce(t *testing.T) {
 	for _, alg := range []protocol.AEADAlgorithm{
-		protocol.AEADAESSIVCMAC512,
 		protocol.AEADAES128GCMSIV,
 	} {
 		a := aeadFor(t, alg)
@@ -158,6 +182,7 @@ func TestNewAEADInvalidKeySize(t *testing.T) {
 		{"SIV-256 short key", protocol.AEADAESSIVCMAC256, make([]byte, 16)},
 		{"SIV-256 long key", protocol.AEADAESSIVCMAC256, make([]byte, 64)},
 		{"SIV-512 short key", protocol.AEADAESSIVCMAC512, make([]byte, 32)},
+		{"SIV-512 long key", protocol.AEADAESSIVCMAC512, make([]byte, 128)},
 		{"GCM-SIV short key", protocol.AEADAES128GCMSIV, make([]byte, 15)},
 		{"GCM-SIV long key", protocol.AEADAES128GCMSIV, make([]byte, 32)},
 	}
