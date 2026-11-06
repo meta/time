@@ -115,6 +115,12 @@ func TestFbclockSourcesDefaultToPTP(t *testing.T) {
 	require.Equal(t, "ptp", f.DefValue)
 }
 
+func TestFbclockV3DefaultsOff(t *testing.T) {
+	f := fbclockCmd.Flags().Lookup("v3")
+	require.NotNil(t, f)
+	require.Equal(t, "false", f.DefValue)
+}
+
 func TestFbclockPrintText(t *testing.T) {
 	var buf bytes.Buffer
 	require.NoError(t, fbclockPrintText(&buf, fbclockBinSample))
