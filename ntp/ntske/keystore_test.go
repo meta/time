@@ -24,6 +24,7 @@ import (
 	"testing"
 
 	"github.com/facebook/time/ntp/protocol"
+	"github.com/facebook/time/ntp/protocol/nts"
 	"github.com/stretchr/testify/require"
 )
 
@@ -266,6 +267,22 @@ func TestInitialKeyEnablesCrossKeystoreOpen(t *testing.T) {
 	require.Equal(t, s2c, gotS2C)
 }
 
+// TestSealingKeyWrongLength checks that sealing and opening with a master key
+// of the wrong size fail with nts.ErrAEADKeySize.
+func TestSealingKeyWrongLength(t *testing.T) {
+	c2s, s2c := make([]byte, 64), make([]byte, 64)
+	cookie, err := SealEnvelope(rand.Reader, 1, make([]byte, MasterKeyLen()), protocol.AEADAESSIVCMAC512, c2s, s2c)
+	require.NoError(t, err)
+	c, err := ParseCookie(cookie)
+	require.NoError(t, err)
+	for _, n := range []int{0, 32, MasterKeyLen() - 1, MasterKeyLen() + 1} {
+		_, err := SealEnvelope(rand.Reader, 1, make([]byte, n), protocol.AEADAESSIVCMAC512, c2s, s2c)
+		require.ErrorIs(t, err, nts.ErrAEADKeySize, "seal key %d", n)
+		_, _, _, err = c.Open(make([]byte, n))
+		require.ErrorIs(t, err, nts.ErrAEADKeySize, "open key %d", n)
+	}
+}
+
 // TestInitialKeyWrongLength checks that a master key of the wrong size is
 // rejected rather than silently producing a broken keystore.
 func TestInitialKeyWrongLength(t *testing.T) {
@@ -273,7 +290,7 @@ func TestInitialKeyWrongLength(t *testing.T) {
 	require.Error(t, err)
 }
 
-// MasterKeyLen must equal the AES-SIV-CMAC-512 key length (guards the fail-loud accessor).
+// MasterKeyLen must equal the AES-SIV-CMAC-512 key length.
 func TestMasterKeyLen(t *testing.T) {
 	require.Equal(t, 64, MasterKeyLen())
 }

@@ -27,6 +27,7 @@ import (
 
 	"github.com/facebook/time/ntp/protocol"
 	"github.com/facebook/time/ntp/protocol/nts"
+	"github.com/facebook/time/ntp/protocol/nts/aessiv"
 )
 
 /*
@@ -58,7 +59,7 @@ Wire format (chrony-compatible; see chrony's nts_ke_server.c):
   we fold this random nonce into the SIV as associated data, so identical key
   material produces distinct cookies. This matches chrony, which passes the
   nonce as the SIV nonce component.
-- Ciphertext: tink's AES-SIV output - the 16-octet synthetic IV (tag) followed
+- Ciphertext: the AES-SIV output - the 16-octet synthetic IV (tag) followed
   by the encrypted C2S || S2C key material.
 The *session* AEAD algorithm (the one the client will use for NTP, negotiated
 via NTS-KE) is NOT stored in the cookie. It is inferred from the total cookie
@@ -70,13 +71,6 @@ Note the distinction between the two AES-SIV-CMAC-512 uses here: the *keystore*
 always seals cookies with it (a fixed 64-octet master key), independent of
 whichever AEAD the *session* negotiated.
 */
-
-const (
-	// masterAEADID is the algorithm the keystore uses to seal every cookie,
-	// regardless of the negotiated session algorithm. AES-SIV-CMAC-512 is a
-	// deterministic AEAD whose 16-octet synthetic IV doubles as the auth tag.
-	masterAEADID = protocol.AEADAESSIVCMAC512
-)
 
 // SharedTestMasterKey is a fixed 64-octet cookie master key used ONLY to bridge
 // the gap until a Keychain-backed keystore lets every responder in the fleet
@@ -110,17 +104,12 @@ const (
 
 // MasterKeyLen returns the AES-SIV-CMAC-512 cookie master-key length.
 func MasterKeyLen() int {
-	n, err := aeadIDToKeyLen(masterAEADID)
-	if err != nil {
-		panic(fmt.Sprintf("ntske: master AEAD %d has no key length: %v", masterAEADID, err))
-	}
-	return n
+	return aessiv.KeySize512
 }
 
 // Sentinel errors. Compare with errors.Is. As in the nts package, the
-// underlying tink verification error is surfaced as text on ErrCookieVerify but
-// deliberately kept out of the errors.Is chain to insulate callers from tink
-// internals.
+// underlying AES-SIV error is surfaced as text on ErrCookieVerify but kept out
+// of the errors.Is chain.
 var (
 	ErrCookieTooShort       = errors.New("ntske: cookie too short")
 	ErrCookieMalformed      = errors.New("ntske: cookie malformed")
@@ -262,6 +251,16 @@ func (ks *InMemoryKeystore) OpenCookie(cookie []byte) (protocol.AEADAlgorithm, [
 	return c.Open(master)
 }
 
+// cookieSIV seals cookies deterministically, with the cookie nonce as the only
+// S2V component; nts.NewAEAD would add a random second one.
+func cookieSIV(sealingKey []byte) (*aessiv.AESSIV, error) {
+	if len(sealingKey) != MasterKeyLen() {
+		return nil, fmt.Errorf("ntske: master aead: %w: AES-SIV-CMAC-512 requires %d bytes, got %d",
+			nts.ErrAEADKeySize, MasterKeyLen(), len(sealingKey))
+	}
+	return aessiv.NewAESSIV(sealingKey)
+}
+
 // SealEnvelope seals c2s || s2c under sealingKey and assembles the cookie
 // [Key ID][Nonce][AES-SIV ciphertext]; nonce bytes are read from rnd.
 func SealEnvelope(rnd io.Reader, keyID uint32, sealingKey []byte, aeadID protocol.AEADAlgorithm, c2s, s2c []byte) ([]byte, error) {
@@ -277,14 +276,14 @@ func SealEnvelope(rnd io.Reader, keyID uint32, sealingKey []byte, aeadID protoco
 	if _, err := io.ReadFull(rnd, nonce); err != nil {
 		return nil, fmt.Errorf("ntske: read nonce: %w", err)
 	}
-	aead, err := nts.NewAEAD(masterAEADID, sealingKey)
+	siv, err := cookieSIV(sealingKey)
 	if err != nil {
-		return nil, fmt.Errorf("ntske: master aead: %w", err)
+		return nil, err
 	}
 	plaintext := make([]byte, 0, 2*keyLen)
 	plaintext = append(plaintext, c2s...)
 	plaintext = append(plaintext, s2c...)
-	_, ct, err := aead.Seal(nonce, plaintext)
+	ct, err := siv.Seal(nil, plaintext, nonce)
 	if err != nil {
 		return nil, fmt.Errorf("ntske: seal cookie: %w", err)
 	}
@@ -336,11 +335,11 @@ func (c *Cookie) Open(sealingKey []byte) (protocol.AEADAlgorithm, []byte, []byte
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	aead, err := nts.NewAEAD(masterAEADID, sealingKey)
+	siv, err := cookieSIV(sealingKey)
 	if err != nil {
-		return 0, nil, nil, fmt.Errorf("ntske: master aead: %w", err)
+		return 0, nil, nil, err
 	}
-	pt, err := aead.Open(c.nonce, nil, c.ct)
+	pt, err := siv.Open(nil, c.ct, c.nonce)
 	if err != nil {
 		return 0, nil, nil, fmt.Errorf("%w: %s", ErrCookieVerify, err.Error())
 	}

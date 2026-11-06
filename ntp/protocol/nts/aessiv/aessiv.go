@@ -14,9 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package aessiv implements AES-SIV-CMAC-256 (RFC 5297) over crypto/aes, the
-// 32-octet-key AEAD of IANA id 15 that RFC 8915 section 4.1.5 mandates for NTS.
-// The algorithm is a port of tink's daead/subtle.AESSIV, which is 64-octet only.
+// Package aessiv implements AES-SIV-CMAC (RFC 5297) for NTS AEAD ids 15 and 17.
 package aessiv
 
 import (
@@ -33,9 +31,11 @@ const (
 	// IV that AES-SIV prepends to every ciphertext.
 	BlockSize = aes.BlockSize
 
-	// KeySize is the AES-SIV-CMAC-256 key length in octets, the only size this
-	// package accepts. Its leftmost half drives S2V, its rightmost half CTR.
+	// KeySize is the AES-SIV-CMAC-256 key length in octets.
 	KeySize = 32
+
+	// KeySize512 is the AES-SIV-CMAC-512 key length in octets.
+	KeySize512 = 64
 
 	// ctrBatchThreshold is where crypto/cipher's CTR overtakes a per-block
 	// loop: below it, its 512-octet stream buffer costs more than its 8-block
@@ -45,7 +45,7 @@ const (
 
 // Sentinel errors. Compare with errors.Is.
 var (
-	// ErrKeySize is returned by NewAESSIV for a key that is not KeySize octets.
+	// ErrKeySize is returned by NewAESSIV for a key of any other length.
 	ErrKeySize = errors.New("aessiv: invalid key size")
 	// ErrPlaintextTooLong is returned by Seal when the ciphertext would not
 	// fit in an int.
@@ -60,7 +60,7 @@ var (
 
 var zeroBlock [BlockSize]byte
 
-// AESSIV implements AES-SIV-CMAC-256 (RFC 5297) and is safe for concurrent use.
+// AESSIV implements AES-SIV-CMAC and is safe for concurrent use.
 // It deliberately does not implement crypto/cipher.AEAD: that contract is
 // nonce-based while SIV is deterministic, as tink's DeterministicAEAD reflects.
 type AESSIV struct {
@@ -81,18 +81,18 @@ type scratch struct {
 	ctr [2 * BlockSize]byte // CTR counter followed by its keystream block
 }
 
-// NewAESSIV returns an AESSIV instance for a KeySize-octet key. RFC 5297
-// section 2.2 splits it in half: the leftmost half keys S2V, the rightmost CTR.
-// The longer RFC 5297 keys are rejected; this package implements id 15 only.
+// NewAESSIV returns an AESSIV for a KeySize or KeySize512 key. RFC 5297
+// section 2.2 splits it in half: the left half keys S2V, the right half CTR.
 func NewAESSIV(key []byte) (*AESSIV, error) {
-	if len(key) != KeySize {
-		return nil, fmt.Errorf("%w: got %d, want %d", ErrKeySize, len(key), KeySize)
+	if len(key) != KeySize && len(key) != KeySize512 {
+		return nil, fmt.Errorf("%w: got %d, want %d or %d", ErrKeySize, len(key), KeySize, KeySize512)
 	}
-	c, err := newCMAC(key[:KeySize/2])
+	half := len(key) / 2
+	c, err := newCMAC(key[:half])
 	if err != nil {
 		return nil, err
 	}
-	ctr, err := aes.NewCipher(key[KeySize/2:])
+	ctr, err := aes.NewCipher(key[half:])
 	if err != nil {
 		return nil, fmt.Errorf("aessiv: could not obtain cipher: %w", err)
 	}

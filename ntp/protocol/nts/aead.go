@@ -26,7 +26,6 @@ import (
 	"github.com/facebook/time/ntp/protocol"
 	"github.com/facebook/time/ntp/protocol/nts/aessiv"
 	aeadsubtle "github.com/tink-crypto/tink-go/v2/aead/subtle"
-	daeadsubtle "github.com/tink-crypto/tink-go/v2/daead/subtle"
 )
 
 // AEAD is the authenticated-encryption interface used to protect the encrypted
@@ -34,13 +33,12 @@ import (
 // wrap a specific negotiated IANA AEAD algorithm; construct one with NewAEAD.
 type AEAD interface {
 	// Seal encrypts and authenticates plaintext, binding it to ad. It returns
-	// the algorithm-required wire nonce (empty for algorithms without one) and
-	// ciphertext to place in the Authenticator's corresponding fields.
+	// the algorithm-required wire nonce and ciphertext to place in the
+	// Authenticator's corresponding fields.
 	Seal(ad, plaintext []byte) (nonce, ciphertext []byte, err error)
-	// Open verifies and decrypts ciphertext against ad and nonce. AEAD-15 accepts
-	// any non-empty nonce as an S2V component; other implementations enforce their
-	// algorithm-specific nonce requirement. Invalid lengths return ErrAEADNonceSize.
-	// Authentication and decryption failures are returned as the underlying error.
+	// Open verifies and decrypts ciphertext against ad and nonce. A nonce of the
+	// wrong length returns ErrAEADNonceSize; authentication and decryption
+	// failures are returned as the underlying error.
 	Open(ad, nonce, ciphertext []byte) (plaintext []byte, err error)
 }
 
@@ -51,20 +49,13 @@ var (
 	// ErrAEADKeySize is returned by NewAEAD when the key length does not match
 	// the one required by the negotiated algorithm.
 	ErrAEADKeySize = errors.New("nts: invalid AEAD key size")
-	// ErrAEADNonceSize is returned by Open when the nonce violates the negotiated
-	// algorithm's rule, such as an empty nonce for AEAD-15.
+	// ErrAEADNonceSize is returned by Open when the nonce has the wrong length
+	// for the negotiated algorithm.
 	ErrAEADNonceSize = errors.New("nts: invalid AEAD nonce size")
 )
 
 const (
-	// aesSIVCMAC256KeySize is the AES-SIV-CMAC-256 key length in octets (RFC 5297).
-	aesSIVCMAC256KeySize = aessiv.KeySize
-
-	// aesSIVCMAC256GeneratedNonceSize matches chrony's generated NTS nonce length.
-	aesSIVCMAC256GeneratedNonceSize = 16
-
-	// aesSIVCMAC512KeySize is the AES-SIV-CMAC-512 key length in octets (RFC 5297).
-	aesSIVCMAC512KeySize = 64
+	aesSIVCMACGeneratedNonceSize = 16
 
 	// aes128GCMSIVKeySize is the AES-128-GCM-SIV key length in octets. tink's
 	// NewAESGCMSIV also accepts 32-octet keys (AES-256), but IANA AEAD ID 30 is
@@ -82,27 +73,9 @@ const (
 func NewAEAD(algorithm protocol.AEADAlgorithm, key []byte) (AEAD, error) {
 	switch algorithm {
 	case protocol.AEADAESSIVCMAC256:
-		// tink's daead/subtle takes 64-octet keys only, so the RFC 8915
-		// mandatory-to-implement algorithm uses our own RFC 5297 package.
-		if len(key) != aesSIVCMAC256KeySize {
-			return nil, fmt.Errorf("%w: AES-SIV-CMAC-256 requires %d bytes, got %d",
-				ErrAEADKeySize, aesSIVCMAC256KeySize, len(key))
-		}
-		siv, err := aessiv.NewAESSIV(key)
-		if err != nil {
-			return nil, fmt.Errorf("nts: AES-SIV-CMAC-256: %w", err)
-		}
-		return &aesSIVCMAC256{siv: siv}, nil
+		return newAESSIVCMAC("AES-SIV-CMAC-256", aessiv.KeySize, key)
 	case protocol.AEADAESSIVCMAC512:
-		if len(key) != aesSIVCMAC512KeySize {
-			return nil, fmt.Errorf("%w: AES-SIV-CMAC-512 requires %d bytes, got %d",
-				ErrAEADKeySize, aesSIVCMAC512KeySize, len(key))
-		}
-		siv, err := daeadsubtle.NewAESSIV(key)
-		if err != nil {
-			return nil, fmt.Errorf("nts: AES-SIV-CMAC: %w", err)
-		}
-		return &aesSIVCMAC{siv: siv}, nil
+		return newAESSIVCMAC("AES-SIV-CMAC-512", aessiv.KeySize512, key)
 	case protocol.AEADAES128GCMSIV:
 		// key_len check
 		if len(key) != aes128GCMSIVKeySize {
@@ -119,67 +92,44 @@ func NewAEAD(algorithm protocol.AEADAlgorithm, key []byte) (AEAD, error) {
 	}
 }
 
-// aesSIVCMAC256 wraps our AES-SIV-CMAC-256 (RFC 5297, 32-octet key), the
-// RFC 8915 §4.1.5 mandatory-to-implement algorithm. The packet associated data
-// and wire nonce are consecutive S2V components, matching chrony's usage.
-type aesSIVCMAC256 struct {
+func newAESSIVCMAC(name string, keySize int, key []byte) (AEAD, error) {
+	if len(key) != keySize {
+		return nil, fmt.Errorf("%w: %s requires %d bytes, got %d",
+			ErrAEADKeySize, name, keySize, len(key))
+	}
+	siv, err := aessiv.NewAESSIV(key)
+	if err != nil {
+		return nil, fmt.Errorf("nts: %s: %w", name, err)
+	}
+	return &aesSIVCMAC{siv: siv}, nil
+}
+
+type aesSIVCMAC struct {
 	siv *aessiv.AESSIV
 }
 
 // encrypt-and-authenticate
-func (a *aesSIVCMAC256) Seal(ad, plaintext []byte) ([]byte, []byte, error) {
-	nonce := make([]byte, aesSIVCMAC256GeneratedNonceSize)
+func (a *aesSIVCMAC) Seal(ad, plaintext []byte) ([]byte, []byte, error) {
+	nonce := make([]byte, aesSIVCMACGeneratedNonceSize)
 	if _, err := rand.Read(nonce); err != nil {
-		return nil, nil, fmt.Errorf("nts: SIV-CMAC-256 nonce: %w", err)
+		return nil, nil, fmt.Errorf("nts: AES-SIV-CMAC nonce: %w", err)
 	}
 	ct, err := a.siv.Seal(nil, plaintext, ad, nonce)
 	if err != nil {
-		return nil, nil, fmt.Errorf("nts: SIV-CMAC-256 encrypt: %w", err)
+		return nil, nil, fmt.Errorf("nts: AES-SIV-CMAC encrypt: %w", err)
 	}
 	return nonce, ct, nil
 }
 
 // verify-and-decrypt
-func (a *aesSIVCMAC256) Open(ad, nonce, ciphertext []byte) ([]byte, error) {
-	// RFC 5297 §6 registers AEAD_AES_SIV_CMAC_256 with N_MIN = 1. Although
-	// the underlying SIV primitive supports deterministic use without a nonce,
-	// an empty nonce is not valid for the negotiated AEAD-15 profile.
+func (a *aesSIVCMAC) Open(ad, nonce, ciphertext []byte) ([]byte, error) {
+	// RFC 5297 section 6: N_MIN = 1.
 	if len(nonce) < 1 {
-		return nil, fmt.Errorf("%w: SIV-CMAC-256 requires at least 1 byte", ErrAEADNonceSize)
+		return nil, fmt.Errorf("%w: AES-SIV-CMAC requires at least 1 byte", ErrAEADNonceSize)
 	}
-	// chrony authenticates the wire nonce as a second S2V component.
 	pt, err := a.siv.Open(nil, ciphertext, ad, nonce)
 	if err != nil {
-		return nil, fmt.Errorf("nts: SIV-CMAC-256 decrypt: %w", err)
-	}
-	return pt, nil
-}
-
-// aesSIVCMAC wraps tink's deterministic AES-SIV-CMAC (RFC 5297, 64-octet key).
-type aesSIVCMAC struct {
-	siv *daeadsubtle.AESSIV
-}
-
-// encrypt-and-authenticate
-func (a *aesSIVCMAC) Seal(ad, plaintext []byte) ([]byte, []byte, error) {
-	ct, err := a.siv.EncryptDeterministically(plaintext, ad)
-	if err != nil {
-		return nil, nil, fmt.Errorf("nts: SIV encrypt: %w", err)
-	}
-	// Deterministic AEAD: no nonce on the wire (RFC 8915 §5.7); the synthetic
-	// IV is the first 16 octets of the ciphertext.
-	return nil, ct, nil
-}
-
-// verify-and-decrypt
-func (a *aesSIVCMAC) Open(ad, nonce, ciphertext []byte) ([]byte, error) {
-	if len(nonce) != 0 {
-		return nil, fmt.Errorf("%w: empty nonce required for SIV, got %d bytes",
-			ErrAEADNonceSize, len(nonce))
-	}
-	pt, err := a.siv.DecryptDeterministically(ciphertext, ad)
-	if err != nil {
-		return nil, fmt.Errorf("nts: SIV decrypt: %w", err)
+		return nil, fmt.Errorf("nts: AES-SIV-CMAC decrypt: %w", err)
 	}
 	return pt, nil
 }

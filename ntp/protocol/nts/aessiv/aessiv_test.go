@@ -124,16 +124,46 @@ func TestRFC5297A2(t *testing.T) {
 	require.Equal(t, plaintext, opened)
 }
 
-// TestNewAESSIVKeySizes checks that only the 32-octet id 15 key is accepted.
-// A 16-octet key must be refused too: it looks like a plausible AES-128 key but
-// leaves nothing for the CTR half.
 func TestNewAESSIVKeySizes(t *testing.T) {
-	_, err := NewAESSIV(make([]byte, KeySize))
-	require.NoError(t, err)
+	for _, n := range []int{KeySize, KeySize512} {
+		_, err := NewAESSIV(make([]byte, n))
+		require.NoError(t, err, "key size %d", n)
+	}
 
-	for _, n := range []int{0, 15, 16, 31, 33, 47, 48, 63, 64, 65, 128} {
+	for _, n := range []int{0, 15, 16, 31, 33, 47, 48, 63, 65, 128} {
 		_, err := NewAESSIV(make([]byte, n))
 		require.ErrorIs(t, err, ErrKeySize, "key size %d", n)
+	}
+}
+
+// TestTinkKnownAnswer512 checks vectors captured from tink's daead/subtle.AESSIV.
+func TestTinkKnownAnswer512(t *testing.T) {
+	a, err := NewAESSIV(make([]byte, KeySize512))
+	require.NoError(t, err)
+
+	for _, tc := range []struct {
+		name string
+		ad   []byte
+		pt   []byte
+		want string
+	}{
+		{"empty-ad-empty-pt", nil, nil, "7009249e60b613d224028adcc038d4ac"},
+		{"ad-empty-pt", []byte("associated-data"), nil, "2d843364bf6958d9ea65ec6754f8481d"},
+		{
+			"ad-32byte-pt",
+			[]byte("associated-data"),
+			[]byte("plaintext-msg-32-bytes-long-xxx!"),
+			"daec02b3076a9843466aff2cd869b39418baff9157c6a142023dafb90686902190fabb0c62052ff41fea3091a805660b",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := mustHex(t, tc.want)
+			require.Equal(t, want, mustSeal(t, a, nil, tc.pt, tc.ad))
+
+			pt, err := a.Open(nil, want, tc.ad)
+			require.NoError(t, err)
+			require.True(t, bytes.Equal(tc.pt, pt))
+		})
 	}
 }
 

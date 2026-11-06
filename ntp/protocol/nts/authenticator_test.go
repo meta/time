@@ -19,13 +19,11 @@ package nts
 import (
 	"bytes"
 	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"testing"
 
 	"github.com/facebook/time/ntp/protocol"
 	"github.com/stretchr/testify/require"
-	"github.com/tink-crypto/tink-go/v2/daead/subtle"
 )
 
 // newTestAEAD returns an AEAD backed by AES-SIV-CMAC-512 for authenticator tests.
@@ -175,18 +173,15 @@ func TestOpenAuthenticatorRejectsWrongType(t *testing.T) {
 	require.ErrorIs(t, err, ErrAuthenticatorMalformed)
 }
 
-func TestOpenAuthenticatorRejectsNonEmptyNonce(t *testing.T) {
+func TestOpenAuthenticatorRejectsEmptyNonce(t *testing.T) {
 	siv := newTestAEAD(t)
-	body, err := MarshalAuthenticatorBody([]byte{1, 2, 3, 4}, []byte{5, 6, 7, 8})
+	body, err := MarshalAuthenticatorBody(nil, make([]byte, 16))
 	require.NoError(t, err)
 	ef := protocol.ExtensionField{Type: protocol.NTSAuthenticator, Body: body}
 	_, err = OpenAuthenticator(siv, []byte("ad"), ef)
 	require.ErrorIs(t, err, ErrAuthenticatorMalformed)
 }
 
-// TestSealOpenAuthenticatorGCMSIV exercises the non-deterministic GCM-SIV path
-// through the authenticator: unlike SIV, GCM-SIV emits a non-empty nonce that
-// must survive marshalling into and parsing back out of the EF body.
 func TestSealOpenAuthenticatorGCMSIV(t *testing.T) {
 	aead := newTestAEADWithAlg(t, protocol.AEADAES128GCMSIV)
 	ad := []byte("ntp-header-and-leading-extension-fields")
@@ -214,72 +209,6 @@ func TestOpenAuthenticatorGCMSIVRejectsTamperedAD(t *testing.T) {
 	tampered[0] ^= 0xff
 	_, err = OpenAuthenticator(aead, tampered, ef)
 	require.ErrorIs(t, err, ErrAuthenticatorVerify)
-}
-
-// TestAESSIVKnownAnswerVectors pins tink's deterministic AES-SIV-CMAC-512
-// output for fixed inputs. Roundtripping via Seal+Open only proves
-// self-consistency, so it can't catch a future tink output change that
-// flips both Encrypt and Decrypt in step. This test asserts exact ciphertext
-// bytes against captured tink output so any drift in the primitive — version
-// bump, output-format change, accidental tag/ciphertext reordering — fails
-// loudly.
-//
-// We do NOT use the Wycheproof aead_aes_siv_cmac_test.json vectors directly:
-// Wycheproof's tests have separate aad and iv fields that map to a *two-entry*
-// S2V AD list ([aad, iv]), but tink's single-AD EncryptDeterministically takes
-// one AD bytes-slice and computes a *one-entry* S2V AD list ([ad]). Even with
-// aad="" the resulting outputs differ — S2V([empty, iv]) ≠ S2V([iv]) because
-// the empty entry still drives an extra round of S2V state mutation.
-//
-// Captured outputs are reproducible: same key (all-zero 64-byte), same AD,
-// same plaintext → tink emits the same bytes deterministically. If tink ever
-// updates AESSIV in a way that changes any of these, the test fails and we
-// re-evaluate.
-func TestAESSIVKnownAnswerVectors(t *testing.T) {
-	key := make([]byte, subtle.AESSIVKeySize) // all-zero 64-byte key
-	siv, err := subtle.NewAESSIV(key)
-	require.NoError(t, err)
-
-	cases := []struct {
-		name    string
-		ad      []byte
-		pt      []byte
-		wantHex string // synthetic IV (16 octets) || CTR-encrypted plaintext
-	}{
-		{
-			name:    "empty-ad-empty-pt",
-			ad:      nil,
-			pt:      nil,
-			wantHex: "7009249e60b613d224028adcc038d4ac",
-		},
-		{
-			name:    "ad-empty-pt",
-			ad:      []byte("associated-data"),
-			pt:      nil,
-			wantHex: "2d843364bf6958d9ea65ec6754f8481d",
-		},
-		{
-			name:    "ad-32byte-pt",
-			ad:      []byte("associated-data"),
-			pt:      []byte("plaintext-msg-32-bytes-long-xxx!"),
-			wantHex: "daec02b3076a9843466aff2cd869b39418baff9157c6a142023dafb90686902190fabb0c62052ff41fea3091a805660b",
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			want, err := hex.DecodeString(tc.wantHex)
-			require.NoError(t, err)
-
-			got, err := siv.EncryptDeterministically(tc.pt, tc.ad)
-			require.NoError(t, err)
-			require.Equal(t, want, got,
-				"tink AES-SIV-CMAC-512 output drift detected — primitive or output layout has changed; re-derive expected bytes and confirm the new output is still RFC 5297-compliant before updating")
-
-			pt, err := siv.DecryptDeterministically(want, tc.ad)
-			require.NoError(t, err)
-			require.True(t, bytes.Equal(tc.pt, pt))
-		})
-	}
 }
 
 func TestSealAuthenticatorThroughExtensionFramework(t *testing.T) {
