@@ -680,6 +680,8 @@ TEST_F(FBClockDataReaderTest, GettimeRefusesASaturatedBound) {
     store(FBCLOCK_SOURCE_NTP, clock);
     fbclock_truetime tt = {};
     EXPECT_EQ(fbclock_gettime(&lib_, &tt), FBCLOCK_E_WOU_TOO_BIG);
+    EXPECT_EQ(
+        fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_WOU_TOO_BIG);
   }
 }
 
@@ -692,9 +694,15 @@ TEST_F(FBClockDataReaderTest, GettimeAppliesTheCallersCap) {
   ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP, 2 * bound_ns), FBCLOCK_E_NO_ERROR);
   ASSERT_EQ(fbclock_gettime(&lib_, &tt), FBCLOCK_E_NO_ERROR);
   EXPECT_EQ(tt.latest_ns - tt.earliest_ns, 2ULL * bound_ns);
+  EXPECT_EQ(fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_NO_ERROR);
   ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP, 2 * bound_ns - 1), FBCLOCK_E_NO_ERROR);
   EXPECT_EQ(fbclock_gettime(&lib_, &tt), FBCLOCK_E_WOU_TOO_BIG);
   EXPECT_EQ(fbclock_gettime_utc(&lib_, &tt), FBCLOCK_E_WOU_TOO_BIG);
+  EXPECT_EQ(
+      fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_WOU_TOO_BIG);
+  EXPECT_EQ(
+      fbclock_gettime_past_utc(&lib_, realtimeNs(), &tt),
+      FBCLOCK_E_WOU_TOO_BIG);
 }
 
 // The extrapolation from an anchor 1 s old scales by coef_ppb; a negative one
@@ -783,16 +791,108 @@ TEST_F(FBClockDataReaderTest, GettimeUtcIsTaiMinus37Seconds) {
   EXPECT_EQ(utc.latest_ns - utc.earliest_ns, tai.latest_ns - tai.earliest_ns);
 }
 
-// gettime_past reads v2, which a v3 lib doesn't map.
-TEST_F(FBClockDataReaderTest, GettimePastIsNoData) {
+// A PTP lib's past reads come from PRTC, NO_DATA until its first write, and an
+// NTP lib's from NTP. The bounds tell the sections apart.
+TEST_F(FBClockDataReaderTest, GettimePastReadsPrtcForPtpAndNtpForNtp) {
+  constexpr uint32_t kPrtcBoundNs = 2000;
+  constexpr uint32_t kNtpBoundNs = 1000000;
   fbclock_data_header_store(&writer_->header, kPtpAndNtpHost);
-  ASSERT_EQ(openLib(FBCLOCK_SOURCE_PTP), FBCLOCK_E_NO_ERROR);
   store(FBCLOCK_SOURCE_PTP, ptpClock(1000));
-  store(FBCLOCK_SOURCE_PRTC, ntpClock(realtimeNs(), 1000, 0));
+  store(FBCLOCK_SOURCE_NTP, ntpClock(realtimeNs(), kNtpBoundNs, 0));
+  ASSERT_EQ(openLib(FBCLOCK_SOURCE_PTP), FBCLOCK_E_NO_ERROR);
   fbclock_truetime tt = {};
   EXPECT_EQ(fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_NO_DATA);
-  EXPECT_EQ(
-      fbclock_gettime_past_utc(&lib_, realtimeNs(), &tt), FBCLOCK_E_NO_DATA);
+  // PRTC is on CLOCK_REALTIME too
+  store(FBCLOCK_SOURCE_PRTC, ntpClock(realtimeNs(), kPrtcBoundNs, 0));
+  ASSERT_EQ(fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_NO_ERROR);
+  EXPECT_EQ(tt.latest_ns - tt.earliest_ns, 2ULL * kPrtcBoundNs);
+  ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP), FBCLOCK_E_NO_ERROR);
+  ASSERT_EQ(fbclock_gettime_past(&lib_, realtimeNs(), &tt), FBCLOCK_E_NO_ERROR);
+  EXPECT_EQ(tt.latest_ns - tt.earliest_ns, 2ULL * kNtpBoundNs);
+}
+
+// ts up to FBCLOCK_MAX_EXTRAPOLATION_NS from the anchor, on either side.
+TEST_F(FBClockDataReaderTest, GettimePastRefusesATsFarFromTheAnchor) {
+  fbclock_data_header_store(&writer_->header, kNtpHost);
+  ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP), FBCLOCK_E_NO_ERROR);
+  const int64_t anchor_ns = realtimeNs();
+  store(FBCLOCK_SOURCE_NTP, ntpClock(anchor_ns, 1000000, 0));
+  const int64_t max_ns = FBCLOCK_MAX_EXTRAPOLATION_NS;
+  const struct {
+    int64_t diff_ns;
+    int rcode;
+  } cases[] = {
+      {-max_ns - 1, FBCLOCK_E_DATA_STALE},
+      {-max_ns, FBCLOCK_E_NO_ERROR},
+      {max_ns, FBCLOCK_E_NO_ERROR},
+      {max_ns + 1, FBCLOCK_E_DATA_STALE},
+  };
+  for (const auto& c : cases) {
+    fbclock_truetime tt = {};
+    EXPECT_EQ(fbclock_gettime_past(&lib_, anchor_ns + c.diff_ns, &tt), c.rcode)
+        << c.diff_ns;
+  }
+}
+
+// Holdover runs from ingress to ts, and a ts before ingress has none. UTC's
+// holdover is TAI's.
+TEST_F(FBClockDataReaderTest, GettimePastHoldoverStartsAtIngress) {
+  fbclock_data_header_store(&writer_->header, kNtpHost);
+  ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP), FBCLOCK_E_NO_ERROR);
+  const uint32_t bound_ns = 1000000;
+  const uint32_t holdover_ns_per_s = 50000; // 50 ppm
+  const int64_t anchor_ns = realtimeNs();
+  store(
+      FBCLOCK_SOURCE_NTP,
+      ntpClock(anchor_ns, bound_ns, holdover_ns_per_s, 5000000000));
+  const struct {
+    int64_t ts_ns;
+    uint64_t holdover_ns;
+  } cases[] = {
+      {anchor_ns, 5 * holdover_ns_per_s},
+      {anchor_ns - 2000000000, 3 * holdover_ns_per_s},
+      {anchor_ns - 6000000000, 0},
+  };
+  for (const auto& c : cases) {
+    for (const auto read : {fbclock_gettime_past, fbclock_gettime_past_utc}) {
+      fbclock_truetime tt = {};
+      ASSERT_EQ(read(&lib_, c.ts_ns, &tt), FBCLOCK_E_NO_ERROR);
+      EXPECT_EQ(tt.latest_ns - tt.earliest_ns, 2 * (bound_ns + c.holdover_ns))
+          << c.ts_ns - anchor_ns;
+    }
+  }
+}
+
+// ts before or after the anchor, at either sign of coef_ppb: a negative
+// product needs the signed divisor. UTC takes off the daemon's 37 s.
+TEST_F(FBClockDataReaderTest, GettimePastExtrapolatesBothWays) {
+  fbclock_data_header_store(&writer_->header, kNtpHost);
+  ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP), FBCLOCK_E_NO_ERROR);
+  const int64_t anchor_ns = realtimeNs();
+  for (const int64_t coef_ppb : {100000LL, -100000LL}) {
+    auto clock = ntpClock(anchor_ns, 1000, 0);
+    clock.coef_ppb = coef_ppb;
+    store(FBCLOCK_SOURCE_NTP, clock);
+    for (const int64_t diff_ns : {-1000000000LL, 1000000000LL}) {
+      const int64_t tai_ns = anchor_ns + kDaemonTaiOffsetNs + diff_ns +
+          diff_ns * coef_ppb / 1000000000;
+      fbclock_truetime tai = {};
+      ASSERT_EQ(
+          fbclock_gettime_past(&lib_, anchor_ns + diff_ns, &tai),
+          FBCLOCK_E_NO_ERROR);
+      EXPECT_EQ(
+          fbclock_truetime_midpoint_ns(&tai), static_cast<uint64_t>(tai_ns))
+          << coef_ppb << " " << diff_ns;
+      fbclock_truetime utc = {};
+      ASSERT_EQ(
+          fbclock_gettime_past_utc(&lib_, anchor_ns + diff_ns, &utc),
+          FBCLOCK_E_NO_ERROR);
+      EXPECT_EQ(
+          fbclock_truetime_midpoint_ns(&utc),
+          static_cast<uint64_t>(tai_ns - kDaemonTaiOffsetNs))
+          << coef_ppb << " " << diff_ns;
+    }
+  }
 }
 
 // A NULL path is FBCLOCK_DATA_PATH: where the daemon hasn't written it, init

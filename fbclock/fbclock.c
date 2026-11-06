@@ -823,10 +823,60 @@ static int fbclock_gettime_past_tz_v2(
   return fbclock_check_max_wou(lib->max_wou_ns, truetime);
 }
 
+static int fbclock_gettime_past_v3(
+    fbclock_lib* _Nonnull lib,
+    int64_t ts_realtime_ns,
+    fbclock_truetime* _Nonnull truetime,
+    int time_standard) {
+  if (lib->shmp_v3 == NULL) {
+    return FBCLOCK_E_NO_DATA;
+  }
+  // PTP's anchor isn't always on CLOCK_REALTIME; PRTC's is.
+  int k = lib->section_v3;
+  if (k == fbclock_data_section_index(FBCLOCK_SOURCE_PTP)) {
+    k = fbclock_data_section_index(FBCLOCK_SOURCE_PRTC);
+  }
+  fbclock_data_clock clock;
+  int rcode = fbclock_data_section_load(&lib->shmp_v3->sections[k], &clock);
+  if (rcode != FBCLOCK_E_NO_ERROR) {
+    return rcode;
+  }
+  if (clock.error_bound_ns == UINT32_MAX ||
+      clock.holdover_multiplier_ns == UINT32_MAX) {
+    return FBCLOCK_E_WOU_TOO_BIG;
+  }
+  int64_t diff_ns = ts_realtime_ns - clock.sysclock_time_ns;
+  if (diff_ns > FBCLOCK_MAX_EXTRAPOLATION_NS ||
+      diff_ns < -FBCLOCK_MAX_EXTRAPOLATION_NS) {
+    return FBCLOCK_E_DATA_STALE;
+  }
+  int64_t time_ns = clock.ref_time_ns + diff_ns +
+      diff_ns * clock.coef_ppb / (int64_t)NANOSECONDS_IN_SECONDS;
+  // as in fbclock_calculate_time_past_v2: no holdover for a ts before ingress
+  double seconds = 0.0;
+  if (time_ns > clock.ingress_time_ns) {
+    seconds =
+        (double)(time_ns - clock.ingress_time_ns) / NANOSECONDS_IN_SECONDS;
+  }
+  if (time_standard == FBCLOCK_UTC) {
+    time_ns += UTC_TAI_OFFSET_NS;
+  }
+  uint64_t wou_ns = fbclock_window_of_uncertainty(
+      seconds,
+      clock.error_bound_ns,
+      clock.holdover_multiplier_ns / FBCLOCK_POW2_16);
+  truetime->earliest_ns = time_ns - wou_ns;
+  truetime->latest_ns = time_ns + wou_ns;
+  return fbclock_check_max_wou(lib->max_wou_ns, truetime);
+}
+
 int fbclock_gettime_past(
     fbclock_lib* _Nonnull lib,
     int64_t ts_realtime_ns,
     fbclock_truetime* _Nonnull truetime) {
+  if (lib->shmp_v3 != NULL) {
+    return fbclock_gettime_past_v3(lib, ts_realtime_ns, truetime, FBCLOCK_TAI);
+  }
   return fbclock_gettime_past_tz_v2(lib, ts_realtime_ns, truetime, FBCLOCK_TAI);
 }
 
@@ -834,6 +884,9 @@ int fbclock_gettime_past_utc(
     fbclock_lib* _Nonnull lib,
     int64_t ts_realtime_ns,
     fbclock_truetime* _Nonnull truetime) {
+  if (lib->shmp_v3 != NULL) {
+    return fbclock_gettime_past_v3(lib, ts_realtime_ns, truetime, FBCLOCK_UTC);
+  }
   return fbclock_gettime_past_tz_v2(lib, ts_realtime_ns, truetime, FBCLOCK_UTC);
 }
 

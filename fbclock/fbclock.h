@@ -369,9 +369,9 @@ int fbclock_destroy(fbclock_lib* lib);
 int fbclock_gettime(fbclock_lib* lib, fbclock_truetime* truetime);
 int fbclock_gettime_utc(fbclock_lib* lib, fbclock_truetime* truetime);
 // fbclock_gettime_past translates ts (CLOCK_REALTIME ns since epoch) into a
-// TAI [earliest, latest] window in PHC domain. ts must be from the same host
+// TAI [earliest, latest] window from its source. ts must be from the same host
 // the lib is running on, within FBCLOCK_MAX_EXTRAPOLATION_NS of the daemon's
-// most recent REALTIME snapshot (in either direction). v2-only.
+// most recent REALTIME snapshot (in either direction). A v3 PTP lib reads PRTC.
 int fbclock_gettime_past(
     fbclock_lib* _Nonnull lib,
     int64_t ts_realtime_ns,
