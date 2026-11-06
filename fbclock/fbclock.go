@@ -107,6 +107,12 @@ func NewFBClockV2WithOptions(opts Options) (*FBClock, error) {
 	return newFBClock(C.FBCLOCK_PATH, &cOpts)
 }
 
+// NewFBClockV3 returns new FBClock wrapper reading fbclock data v3, with caller options
+func NewFBClockV3(opts Options) (*FBClock, error) {
+	cOpts := C.fbclock_options{sources: C.uint32_t(opts.Sources), version: C.FBCLOCK_V3}
+	return newFBClock(C.FBCLOCK_DATA_PATH, &cOpts)
+}
+
 // opts == nil selects the defaults, as fbclock_init does
 func newFBClock(path string, opts *C.fbclock_options) (*FBClock, error) {
 	cFBClock := &C.fbclock_lib{}
