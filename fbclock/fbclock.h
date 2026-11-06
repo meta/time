@@ -251,6 +251,11 @@ typedef struct fbclock_truetime {
 // (error_bound/holdover saturate at UINT32_MAX, ~4.29s).
 #define FBCLOCK_MAX_WOU_NS_UNSET 0
 
+// Values for fbclock_options.version.
+#define FBCLOCK_VERSION_DEFAULT 0
+#define FBCLOCK_V2 2
+#define FBCLOCK_V3 3
+
 // fbclock_options and fbclock_lib have no stable binary layout: build fbclock
 // from the same version as its callers (from source or libfbclock.a).
 
@@ -260,9 +265,12 @@ typedef struct fbclock_options {
   // exceeds this many ns with FBCLOCK_E_WOU_TOO_BIG. FBCLOCK_MAX_WOU_NS_UNSET
   // (0) keeps the default behavior.
   uint64_t max_wou_ns;
-  // Sources the caller accepts; 0 means FBCLOCK_SOURCE_PTP. NTP windows are
-  // orders of magnitude wider than PTP's.
+  // Sources the caller accepts; 0 means FBCLOCK_SOURCE_PTP. Only FBCLOCK_V3
+  // serves NTP, with windows orders of magnitude wider than PTP's.
   uint32_t sources;
+  // FBCLOCK_V3 reads v3 at shm_path (NULL: FBCLOCK_DATA_PATH); any other value
+  // reads v2 as today. 0 is the library's default, v2 for now.
+  uint32_t version;
 } fbclock_options;
 
 // fbclock library
@@ -270,6 +278,8 @@ typedef struct fbclock_lib {
   int shm_fd; // file descriptor of opened shared memory object
   uint64_t max_wou_ns; // caller's WOU cap (ns); 0 = none, see fbclock_options
   fbclock_shmdata_v2* shmp_v2; // mmap-ed data
+  fbclock_data* shmp_v3; // the v3 mapping, NULL on a v2 lib
+  int section_v3; // k: the lib reads shmp_v3->sections[k]
 } fbclock_lib;
 
 int fbclock_clockdata_store_data(uint32_t fd, fbclock_clockdata* data);

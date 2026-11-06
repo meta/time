@@ -384,10 +384,78 @@ static void fbclock_close_fds(fbclock_lib* lib) {
   }
 }
 
+static int fbclock_init_v3(
+    fbclock_lib* _Nonnull lib,
+    const char* shm_path,
+    const fbclock_options* _Nonnull options) {
+  // destroy treats a lib whose v3 init failed as v2
+  lib->shm_fd = -1;
+  lib->shmp_v2 = NULL;
+  lib->max_wou_ns = options->max_wou_ns;
+  const char* path = (shm_path != NULL) ? shm_path : FBCLOCK_DATA_PATH;
+  const uint32_t sources =
+      (options->sources != 0) ? options->sources : FBCLOCK_SOURCE_PTP;
+
+  int fd = open(path, O_RDONLY, 0);
+  if (fd == -1) {
+    perror("open fbclock data");
+    return FBCLOCK_E_SHMEM_OPEN;
+  }
+  struct stat st;
+  if (fstat(fd, &st) != 0) {
+    perror("fstat fbclock data");
+    close(fd);
+    return FBCLOCK_E_SHMEM_OPEN;
+  }
+  // Still empty while the daemon creates it: reading it would SIGBUS.
+  if (st.st_size < (off_t)FBCLOCK_DATA_SIZE) {
+    fprintf(
+        stderr,
+        "fbclock: %s is %lld bytes, v3 needs %zu\n",
+        path,
+        (long long)st.st_size,
+        (size_t)FBCLOCK_DATA_SIZE);
+    close(fd);
+    return FBCLOCK_E_SHMEM_OPEN;
+  }
+  fbclock_data* data =
+      mmap(NULL, FBCLOCK_DATA_SIZE, PROT_READ, MAP_SHARED, fd, 0);
+  close(fd);
+  if (data == MAP_FAILED || data == NULL) {
+    return FBCLOCK_E_SHMEM_MAP_FAILED;
+  }
+
+  fbclock_data_header header;
+  fbclock_data_header_load(&data->header, &header);
+  const uint32_t both = sources & header.sources;
+  int rcode = FBCLOCK_E_NO_ERROR;
+  if (memcmp(header.magic, FBCLOCK_DATA_MAGIC, sizeof(header.magic)) != 0) {
+    rcode = FBCLOCK_E_NO_DATA; // the daemon is still starting
+  } else if (header.major != FBCLOCK_DATA_MAJOR) {
+    rcode = FBCLOCK_E_NOTSUP;
+  } else if (both & FBCLOCK_SOURCE_PTP) {
+    lib->section_v3 = fbclock_data_section_index(FBCLOCK_SOURCE_PTP);
+  } else if (both & FBCLOCK_SOURCE_NTP) {
+    lib->section_v3 = fbclock_data_section_index(FBCLOCK_SOURCE_NTP);
+  } else {
+    rcode = FBCLOCK_E_NOTSUP;
+  }
+  if (rcode != FBCLOCK_E_NO_ERROR) {
+    munmap(data, FBCLOCK_DATA_SIZE);
+    return rcode;
+  }
+  lib->shmp_v3 = data;
+  return FBCLOCK_E_NO_ERROR;
+}
+
 int fbclock_init_with_options(
     fbclock_lib* _Nonnull lib,
     const char* shm_path,
     const fbclock_options* options) {
+  lib->shmp_v3 = NULL;
+  if (options != NULL && options->version == FBCLOCK_V3) {
+    return fbclock_init_v3(lib, shm_path, options);
+  }
   // Where /run/fbclock isn't mounted, read the same file under its old name.
   if (shm_path != NULL && strcmp(shm_path, FBCLOCK_PATH) == 0 &&
       access(shm_path, F_OK) != 0) {
@@ -458,7 +526,11 @@ int fbclock_is_ptp_host(void) {
   return access(FBCLOCK_PTPPATH, F_OK) == 0 ? 1 : 0;
 }
 
-int fbclock_destroy(fbclock_lib* lib) {
+int fbclock_destroy(fbclock_lib* _Nonnull lib) {
+  if (lib->shmp_v3 != NULL) {
+    munmap(lib->shmp_v3, FBCLOCK_DATA_SIZE);
+    return FBCLOCK_E_NO_ERROR;
+  }
   munmap(lib->shmp_v2, FBCLOCK_SHMDATA_V2_SIZE);
   fbclock_close_fds(lib);
   return FBCLOCK_E_NO_ERROR;
@@ -636,11 +708,72 @@ int fbclock_gettime_tz_v2(
   return fbclock_check_max_wou(lib->max_wou_ns, truetime);
 }
 
-int fbclock_gettime(fbclock_lib* lib, fbclock_truetime* truetime) {
+static int fbclock_gettime_v3(
+    fbclock_lib* _Nonnull lib,
+    fbclock_truetime* _Nonnull truetime,
+    int time_standard) {
+  if (lib->shmp_v3 == NULL) {
+    return FBCLOCK_E_NO_DATA;
+  }
+  fbclock_data_clock clock;
+  int rcode = fbclock_data_section_load(
+      &lib->shmp_v3->sections[lib->section_v3], &clock);
+  if (rcode != FBCLOCK_E_NO_ERROR) {
+    return rcode;
+  }
+  if (clock.error_bound_ns == UINT32_MAX ||
+      clock.holdover_multiplier_ns == UINT32_MAX) {
+    return FBCLOCK_E_WOU_TOO_BIG;
+  }
+  struct timespec ts;
+  if (clock_gettime(clock.clock_id, &ts) == -1) {
+    return FBCLOCK_E_PTP_READ_OFFSET;
+  }
+  int64_t sysclock_time_now_ns =
+      ts.tv_sec * NANOSECONDS_IN_SECONDS + ts.tv_nsec;
+
+  // as in fbclock_calculate_time_v2: the clock stepped back since the sample
+  if (clock.ingress_time_ns > clock.ref_time_ns) {
+    return FBCLOCK_E_PHC_IN_THE_PAST;
+  }
+  int64_t diff_ns = sysclock_time_now_ns - clock.sysclock_time_ns;
+  if (diff_ns < 0 || diff_ns > FBCLOCK_MAX_EXTRAPOLATION_NS) {
+    return FBCLOCK_E_DATA_STALE;
+  }
+  // signed divisor, as in fbclock_calculate_time_v2
+  int64_t time_ns = clock.ref_time_ns + diff_ns +
+      diff_ns * clock.coef_ppb / (int64_t)NANOSECONDS_IN_SECONDS;
+  int64_t holdover_ns = time_ns - clock.ingress_time_ns;
+  double seconds =
+      holdover_ns > 0 ? (double)holdover_ns / NANOSECONDS_IN_SECONDS : 0.0;
+  // The anchor is TAI, and v3 never smears.
+  if (time_standard == FBCLOCK_UTC) {
+    time_ns += UTC_TAI_OFFSET_NS;
+  }
+  uint64_t wou_ns = fbclock_window_of_uncertainty(
+      seconds,
+      clock.error_bound_ns,
+      clock.holdover_multiplier_ns / FBCLOCK_POW2_16);
+  truetime->earliest_ns = time_ns - wou_ns;
+  truetime->latest_ns = time_ns + wou_ns;
+  return fbclock_check_max_wou(lib->max_wou_ns, truetime);
+}
+
+int fbclock_gettime(
+    fbclock_lib* _Nonnull lib,
+    fbclock_truetime* _Nonnull truetime) {
+  if (lib->shmp_v3 != NULL) {
+    return fbclock_gettime_v3(lib, truetime, FBCLOCK_TAI);
+  }
   return fbclock_gettime_tz_v2(lib, truetime, FBCLOCK_TAI);
 }
 
-int fbclock_gettime_utc(fbclock_lib* lib, fbclock_truetime* truetime) {
+int fbclock_gettime_utc(
+    fbclock_lib* _Nonnull lib,
+    fbclock_truetime* _Nonnull truetime) {
+  if (lib->shmp_v3 != NULL) {
+    return fbclock_gettime_v3(lib, truetime, FBCLOCK_UTC);
+  }
   return fbclock_gettime_tz_v2(lib, truetime, FBCLOCK_UTC);
 }
 
