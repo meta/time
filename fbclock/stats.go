@@ -49,6 +49,15 @@ func (s *StatsCollector) Update(tt *TrueTime, err error) {
 	} else {
 		s.stats.WOUge1000us++
 	}
+	if wou < time.Millisecond {
+		s.stats.WOUlt1ms++
+	} else if wou < 10*time.Millisecond {
+		s.stats.WOUlt10ms++
+	} else if wou < 100*time.Millisecond {
+		s.stats.WOUlt100ms++
+	} else {
+		s.stats.WOUge100ms++
+	}
 	if int64(wou) > s.stats.WOUMax {
 		s.stats.WOUMax = int64(wou)
 	}

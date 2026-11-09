@@ -69,6 +69,7 @@ func TestStatsUpdate(t *testing.T) {
 				WOUAvg:    11,
 				WOUMax:    11,
 				WOUlt10us: 1,
+				WOUlt1ms:  1,
 			},
 		},
 		{
@@ -106,6 +107,7 @@ func TestStatsUpdate(t *testing.T) {
 				WOUMax:     30301,
 				WOUlt10us:  3,
 				WOUlt100us: 1,
+				WOUlt1ms:   4,
 			},
 		},
 		{
@@ -121,6 +123,7 @@ func TestStatsUpdate(t *testing.T) {
 				WOUAvg:      500000,
 				WOUMax:      500000,
 				WOUlt1000us: 1,
+				WOUlt1ms:    1,
 			},
 		},
 		{
@@ -136,6 +139,29 @@ func TestStatsUpdate(t *testing.T) {
 				WOUAvg:      2000000,
 				WOUMax:      2000000,
 				WOUge1000us: 1,
+				WOUlt10ms:   1,
+			},
+		},
+		{
+			name: "wou at the ms edges",
+			inputs: []in{
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1000999999)}},
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1001000000)}},
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1009999999)}},
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1010000000)}},
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1099999999)}},
+				{tt: &lib.TrueTime{Earliest: time.Unix(0, 1000000000), Latest: time.Unix(0, 1100000000)}},
+			},
+			want: lib.Stats{
+				Requests:    6,
+				WOUAvg:      36999999,
+				WOUMax:      100000000,
+				WOUlt1000us: 1,
+				WOUge1000us: 5,
+				WOUlt1ms:    1,
+				WOUlt10ms:   2,
+				WOUlt100ms:  2,
+				WOUge100ms:  1,
 			},
 		},
 		{
@@ -159,6 +185,7 @@ func TestStatsUpdate(t *testing.T) {
 				WOUAvg:    1716,
 				WOUMax:    5000,
 				WOUlt10us: 3,
+				WOUlt1ms:  3,
 			},
 		},
 		{

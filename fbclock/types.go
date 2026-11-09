@@ -83,6 +83,11 @@ type Stats struct {
 	WOUlt100us  int64
 	WOUlt1000us int64
 	WOUge1000us int64
+	// The same reads in ms buckets, for NTP's wider windows
+	WOUlt1ms   int64
+	WOUlt10ms  int64
+	WOUlt100ms int64
+	WOUge100ms int64
 }
 
 // StatsCollector collects stats based on GetTime results

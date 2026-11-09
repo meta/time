@@ -70,25 +70,41 @@ func fbclockSample(tt *fbclock.TrueTime, prefix string, out map[string]int64) {
 	out[prefix+"earliest_ns"] = tt.Earliest.UnixNano()
 }
 
-// Every key here is one ODS timeseries on every PTP client host. Fixed set,
-// pinned by TestFbclockMetricKeys.
-func fbclockMetrics(s fbclock.Stats, prefix, suffix string, out map[string]int64) {
+// An ntp-only run gets its own keys, with buckets for NTP's ms-wide windows.
+// Every other run keeps the PTP synthetic's keys.
+func fbclockKeys(sources fbclock.Sources) (prefix string, msBuckets bool) {
+	if sources == fbclock.SourceNTP {
+		return "ntp.fbclock_synthetic.api.", true
+	}
+	return "ptp.fbclock_synthetic.api.", false
+}
+
+// Every key here is one ODS timeseries on every host that runs the collector.
+// Fixed sets, pinned by TestFbclockMetricKeys and TestFbclockNTPMetricKeys.
+func fbclockMetrics(s fbclock.Stats, prefix, suffix string, msBuckets bool, out map[string]int64) {
 	out[prefix+"wou_ns.avg"+suffix] = s.WOUAvg
 	out[prefix+"wou_ns.max"+suffix] = s.WOUMax
-	out[prefix+"wou_lt_10us.sum"+suffix] = s.WOUlt10us
-	out[prefix+"wou_lt_100us.sum"+suffix] = s.WOUlt100us
-	out[prefix+"wou_lt_1000us.sum"+suffix] = s.WOUlt1000us
-	out[prefix+"wou_ge_1000us.sum"+suffix] = s.WOUge1000us
+	if msBuckets {
+		out[prefix+"wou_lt_1ms.sum"+suffix] = s.WOUlt1ms
+		out[prefix+"wou_lt_10ms.sum"+suffix] = s.WOUlt10ms
+		out[prefix+"wou_lt_100ms.sum"+suffix] = s.WOUlt100ms
+		out[prefix+"wou_ge_100ms.sum"+suffix] = s.WOUge100ms
+	} else {
+		out[prefix+"wou_lt_10us.sum"+suffix] = s.WOUlt10us
+		out[prefix+"wou_lt_100us.sum"+suffix] = s.WOUlt100us
+		out[prefix+"wou_lt_1000us.sum"+suffix] = s.WOUlt1000us
+		out[prefix+"wou_ge_1000us.sum"+suffix] = s.WOUge1000us
+	}
 	out[prefix+"errors.sum"+suffix] = s.Errors
 	out[prefix+"requests.sum"+suffix] = s.Requests
 }
 
-func fbclockPrintJSON(w io.Writer, last *fbclock.TrueTime, s fbclock.Stats, prefix, suffix string) error {
+func fbclockPrintJSON(w io.Writer, last *fbclock.TrueTime, s fbclock.Stats, prefix, suffix string, msBuckets bool) error {
 	out := map[string]int64{}
 	if last != nil {
 		fbclockSample(last, prefix, out)
 	}
-	fbclockMetrics(s, prefix, suffix, out)
+	fbclockMetrics(s, prefix, suffix, msBuckets, out)
 	toPrint, err := json.Marshal(out)
 	if err != nil {
 		return err
@@ -105,7 +121,7 @@ func fbclockPrintText(w io.Writer, tt *fbclock.TrueTime) error {
 }
 
 func fbclockRun(requests int64, duration time.Duration, utc, jsonOut, v3 bool, sources fbclock.Sources) error {
-	prefix := "ptp.fbclock_synthetic.api."
+	prefix, msBuckets := fbclockKeys(sources)
 	suffix := fmt.Sprintf(".%d", int(duration.Seconds()))
 
 	newClock := fbclock.NewFBClockV2WithOptions
@@ -157,7 +173,7 @@ func fbclockRun(requests int64, duration time.Duration, utc, jsonOut, v3 bool, s
 	s := sc.Stats()
 	switch {
 	case jsonOut:
-		err = fbclockPrintJSON(os.Stdout, last, s, prefix, suffix)
+		err = fbclockPrintJSON(os.Stdout, last, s, prefix, suffix, msBuckets)
 	case last != nil:
 		err = fbclockPrintText(os.Stdout, last)
 	default:

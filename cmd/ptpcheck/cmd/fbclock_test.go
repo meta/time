@@ -30,8 +30,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The fbagent collector's grep, verbatim from
-// opsfiles/.../fb_fbagent/files/default/collectors/ptp/ptp_fbclock.sh.
+// The fbagent collectors' grep, verbatim from ptp/ptp_fbclock.sh and
+// ntp/ntp_fbclock.sh in opsfiles/.../fb_fbagent/files/default/collectors/.
 var collectorFilter = regexp.MustCompile(`(earliest_ns|latest_ns|requests)`)
 
 var fbclockBinSample = &fbclock.TrueTime{
@@ -40,14 +40,15 @@ var fbclockBinSample = &fbclock.TrueTime{
 }
 
 // Every key one run can print, built the way fbclockRun builds it.
-func stdoutKeys(t *testing.T) []string {
+func stdoutKeys(t *testing.T, sources fbclock.Sources) []string {
 	t.Helper()
+	prefix, msBuckets := fbclockKeys(sources)
 	out := map[string]int64{}
 	fbclockSample(&fbclock.TrueTime{
 		Earliest: time.Unix(0, 1648137249050666302),
 		Latest:   time.Unix(0, 1648137249050666313),
-	}, "ptp.fbclock_synthetic.api.", out)
-	fbclockMetrics(fbclock.Stats{Requests: 10000, Errors: 639}, "ptp.fbclock_synthetic.api.", ".60", out)
+	}, prefix, out)
+	fbclockMetrics(fbclock.Stats{Requests: 10000, Errors: 639}, prefix, ".60", msBuckets, out)
 	return slices.Sorted(maps.Keys(out))
 }
 
@@ -66,37 +67,56 @@ func TestFbclockMetricKeys(t *testing.T) {
 		"ptp.fbclock_synthetic.api.wou_ns",
 		"ptp.fbclock_synthetic.api.wou_ns.avg.60",
 		"ptp.fbclock_synthetic.api.wou_ns.max.60",
-	}, stdoutKeys(t))
+	}, stdoutKeys(t, fbclock.SourcePTP))
 }
 
-// The collector greps whole lines out of a one-key-per-line JSON object. If the
-// last key were one it drops, the line before keeps its trailing comma and
-// fbagent discards every ptp.fbclock_synthetic.* metric for the host.
+// Only an ntp-only run gets these, the NTP synthetic's keys; any keeps PTP's.
+func TestFbclockNTPMetricKeys(t *testing.T) {
+	require.Equal(t, []string{
+		"ntp.fbclock_synthetic.api.earliest_ns",
+		"ntp.fbclock_synthetic.api.errors.sum.60",
+		"ntp.fbclock_synthetic.api.latest_ns",
+		"ntp.fbclock_synthetic.api.requests.sum.60",
+		"ntp.fbclock_synthetic.api.wou_ge_100ms.sum.60",
+		"ntp.fbclock_synthetic.api.wou_lt_100ms.sum.60",
+		"ntp.fbclock_synthetic.api.wou_lt_10ms.sum.60",
+		"ntp.fbclock_synthetic.api.wou_lt_1ms.sum.60",
+		"ntp.fbclock_synthetic.api.wou_ns",
+		"ntp.fbclock_synthetic.api.wou_ns.avg.60",
+		"ntp.fbclock_synthetic.api.wou_ns.max.60",
+	}, stdoutKeys(t, fbclock.SourceNTP))
+	require.Equal(t, stdoutKeys(t, fbclock.SourcePTP), stdoutKeys(t, fbclock.SourceAny))
+}
+
+// Both collectors grep whole lines out of a one-key-per-line JSON object. If the last key were
+// one they drop, the line before keeps its trailing comma and fbagent discards the host's run.
 func TestFbclockStdoutSurvivesCollectorFilter(t *testing.T) {
-	keys := stdoutKeys(t)
-	require.NotEmpty(t, keys)
-	require.NotRegexp(t, collectorFilter, keys[len(keys)-1])
+	for _, sources := range []fbclock.Sources{fbclock.SourcePTP, fbclock.SourceNTP} {
+		keys := stdoutKeys(t, sources)
+		require.NotEmpty(t, keys)
+		require.NotRegexp(t, collectorFilter, keys[len(keys)-1])
 
-	// That rests on json.Marshal sorting keys, so read the order off the wire.
-	out := map[string]int64{}
-	for i, k := range keys {
-		out[k] = int64(i)
-	}
-	raw, err := json.Marshal(out)
-	require.NoError(t, err)
-
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	_, err = dec.Token()
-	require.NoError(t, err)
-	var order []string
-	for dec.More() {
-		name, err := dec.Token()
+		// That rests on json.Marshal sorting keys, so read the order off the wire.
+		out := map[string]int64{}
+		for i, k := range keys {
+			out[k] = int64(i)
+		}
+		raw, err := json.Marshal(out)
 		require.NoError(t, err)
-		order = append(order, name.(string))
-		var v int64
-		require.NoError(t, dec.Decode(&v))
+
+		dec := json.NewDecoder(bytes.NewReader(raw))
+		_, err = dec.Token()
+		require.NoError(t, err)
+		var order []string
+		for dec.More() {
+			name, err := dec.Token()
+			require.NoError(t, err)
+			order = append(order, name.(string))
+			var v int64
+			require.NoError(t, dec.Decode(&v))
+		}
+		require.Equal(t, keys, order)
 	}
-	require.Equal(t, keys, order)
 }
 
 // The fbagent collector passes -j.
@@ -130,7 +150,7 @@ func TestFbclockPrintText(t *testing.T) {
 func TestFbclockPrintJSON(t *testing.T) {
 	var buf bytes.Buffer
 	s := fbclock.Stats{Requests: 1, WOUAvg: 1664, WOUMax: 1664, WOUlt10us: 1}
-	require.NoError(t, fbclockPrintJSON(&buf, fbclockBinSample, s, "p.", ".1"))
+	require.NoError(t, fbclockPrintJSON(&buf, fbclockBinSample, s, "p.", ".1", false))
 	got := map[string]int64{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
 	require.Equal(t, map[string]int64{
@@ -151,7 +171,7 @@ func TestFbclockPrintJSON(t *testing.T) {
 // A run where every call failed still emits JSON, so the collector records errors.sum.
 func TestFbclockPrintJSONNoSample(t *testing.T) {
 	var buf bytes.Buffer
-	require.NoError(t, fbclockPrintJSON(&buf, nil, fbclock.Stats{Requests: 1, Errors: 1}, "p.", ".1"))
+	require.NoError(t, fbclockPrintJSON(&buf, nil, fbclock.Stats{Requests: 1, Errors: 1}, "p.", ".1", false))
 	got := map[string]int64{}
 	require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
 	require.Equal(t, int64(1), got["p.errors.sum.1"])
