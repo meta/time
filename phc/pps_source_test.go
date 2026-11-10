@@ -508,3 +508,49 @@ func TestPPSSink_getPPSEventTimestamp(t *testing.T) {
 		require.Zero(t, timestamp)
 	})
 }
+
+func TestPollPPSSinkSkipsEventLatchedBeforeEnable(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	defer r.Close()
+	defer w.Close()
+	// a byte left in the pipe keeps poll returning POLLIN
+	_, err = w.Write([]byte{1})
+	require.NoError(t, err)
+	enabledAt := time.Unix(1075896000, 316785140)
+	gomock.InOrder(
+		mockDevice.EXPECT().Fd().Return(r.Fd()),
+		mockDevice.EXPECT().setPinFunc(uint(0), unix.PTP_PF_EXTTS, uint(0)).Return(nil),
+		mockDevice.EXPECT().extTTSRequest(gomock.Any()).Return(nil),
+		mockDevice.EXPECT().Time().Return(enabledAt, nil),
+	)
+	ppsSink, err := PPSSinkFromDevice(mockDevice, 0)
+	require.NoError(t, err)
+	require.Equal(t, enabledAt, ppsSink.enabledAt)
+
+	expectExttsEvent(t, mockDevice, PtpClockTime{Sec: 1075896000, Nsec: 316785140})
+	_, err = ppsSink.PollPPSSink()
+	require.Error(t, err)
+
+	expectExttsEvent(t, mockDevice, PtpClockTime{Sec: 1075896001})
+	timestamp, err := ppsSink.PollPPSSink()
+	require.NoError(t, err)
+	require.Equal(t, time.Unix(1075896001, 0), timestamp)
+
+	expectExttsEvent(t, mockDevice, PtpClockTime{Sec: 1075895958})
+	timestamp, err = ppsSink.PollPPSSink()
+	require.NoError(t, err)
+	require.Equal(t, time.Unix(1075895958, 0), timestamp)
+}
+
+func expectExttsEvent(t *testing.T, mockDevice *MockDeviceController, ts PtpClockTime) {
+	t.Helper()
+	event := PtpExttsEvent{T: ts}
+	var b bytes.Buffer
+	require.NoError(t, binary.Write(&b, hostendian.Order, &event))
+	mockDevice.EXPECT().Read(gomock.Any()).DoAndReturn(func(buf []byte) (int, error) {
+		return copy(buf, b.Bytes()), nil
+	})
+}

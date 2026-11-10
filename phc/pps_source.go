@@ -107,6 +107,7 @@ type PPSSink struct {
 	PulseWidth     uint32
 	Device         DeviceController
 	pollDescriptor unix.PollFd
+	enabledAt      time.Time // events latched before this are not from the PPS source
 }
 
 // ActivatePPSSource configures the PHC device to be a PPS timestamp source
@@ -291,6 +292,11 @@ func PPSSinkFromDevice(targetDevice DeviceController, pinIndex uint) (*PPSSink, 
 		return nil, fmt.Errorf("error during extts request for device %s: %w", targetDevice.File().Name(), err)
 	}
 
+	ppsSink.enabledAt, err = targetDevice.Time()
+	if err != nil {
+		return nil, fmt.Errorf("error getting time on device %s after enabling extts: %w", targetDevice.File().Name(), err)
+	}
+
 	return &ppsSink, nil
 }
 
@@ -345,6 +351,13 @@ func (ppsSink *PPSSink) PollPPSSink() (time.Time, error) {
 	result, err := ppsSink.getPPSEventTimestamp()
 	if err != nil {
 		return time.Time{}, fmt.Errorf("error while fetching pps event on sink %v: %w", ppsSink.Device.File().Name(), err)
+	}
+	if !ppsSink.enabledAt.IsZero() {
+		if !result.After(ppsSink.enabledAt) {
+			return time.Time{}, fmt.Errorf("PPS event at %v was latched before the input was enabled at %v", result, ppsSink.enabledAt)
+		}
+		// the servo may step the clock behind enabledAt once it has an event
+		ppsSink.enabledAt = time.Time{}
 	}
 	return result, nil
 }
