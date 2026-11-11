@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net"
 	"os"
 	"sync"
 	"sync/atomic"
@@ -754,6 +755,18 @@ func (s *Daemon) pollChrony(fetcher *ChronyFetcher, sysNow time.Time) (*ntpSampl
 	}, nil
 }
 
+// pollFailure is "" for a good poll, else the same key for polls that fail the same way: err's
+// text, or only a socket error's cause, since its addresses name each poll's own local port.
+func pollFailure(err error) string {
+	if err == nil {
+		return ""
+	}
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
+		return opErr.Err.Error()
+	}
+	return err.Error()
+}
+
 // storeNTPDataV3 writes sample to v3's ntp section, anchored on the system clock reading now.
 func storeNTPDataV3(v3 *fbclock.DataFile, sample *ntpSample, now time.Time) error {
 	// the system clock is both anchor (in TAI) and base, so the coefficient is 0
@@ -775,23 +788,26 @@ func (s *Daemon) populateNTPDataV3(ctx context.Context, fetcher *ChronyFetcher, 
 	defer wg.Wait()
 	// its own goroutine, so a slow or dead chronyd never delays a write
 	wg.Go(func() {
-		// a host whose chronyd follows the PHC stays that way, so that's logged once
-		var followedLocal bool
+		// so a failure that lasts is logged once
+		var prevFailure string
 		ticker := time.NewTicker(s.cfg.Interval)
 		defer ticker.Stop()
 		for {
 			// read before the fetch, so the bound ages from no later than the instant chronyd
 			// describes; not RefTime, whose age RootDispersion already covers
 			sample, err := s.pollChrony(fetcher, time.Now())
-			local := errors.Is(err, errLocalReference)
-			if err != nil && (!local || !followedLocal) {
-				log.Errorf("polling chronyd for fbclock data v3: %v", err)
+			if failure := pollFailure(err); failure != prevFailure {
+				if err != nil {
+					log.Errorf("polling chronyd for fbclock data v3: %v", err)
+				} else {
+					log.Info("polling chronyd for fbclock data v3 succeeded")
+				}
+				prevFailure = failure
 			}
-			followedLocal = local
 			switch {
 			case err == nil:
 				last.Store(sample)
-			case local:
+			case errors.Is(err, errLocalReference):
 				// chronyd steers the clock to a reference nothing checks, so no NTP sample bounds it,
 				// this run's or one a previous run left in the file: write a bound readers refuse
 				last.Store(&ntpSample{errorBoundNS: math.MaxUint32})

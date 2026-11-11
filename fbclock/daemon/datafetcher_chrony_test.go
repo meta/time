@@ -22,6 +22,7 @@ import (
 	"net"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,8 @@ import (
 	"github.com/facebook/time/fbclock/stats"
 	"github.com/facebook/time/leapsectz"
 	ntp "github.com/facebook/time/ntp/protocol"
+	log "github.com/sirupsen/logrus"
+	logtest "github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
@@ -287,6 +290,45 @@ func TestPopulateNTPDataV3(t *testing.T) {
 		clock := ntpSection(t, path).Clock
 		// the second poll's ingress: the first one timed out and wrote nothing
 		require.WithinRange(t, time.Unix(0, clock.IngressTimeNS).Add(-leapsectz.UTCOffset), before.Add(interval), time.Now())
+	})
+
+	t.Run("logs a failure when it starts or changes, and the recovery", func(t *testing.T) {
+		const interval = 100 * time.Millisecond
+		s, v3, _ := ntpTestDaemon(t, interval)
+		hooks := log.StandardLogger().ReplaceHooks(make(log.LevelHooks))
+		t.Cleanup(func() { log.StandardLogger().ReplaceHooks(hooks) })
+		hook := logtest.NewGlobal()
+		// the poller's lines as "level: message", not what other tests' goroutines log
+		pollLines := func() []string {
+			var lines []string
+			for _, e := range hook.AllEntries() {
+				if strings.HasPrefix(e.Message, "polling chronyd for fbclock data v3") {
+					lines = append(lines, e.Level.String()+": "+e.Message)
+				}
+			}
+			return lines
+		}
+		// a good first poll, which logs nothing; after the last answer every poll times out
+		startNTP(t, s, fakeChronyd(t, trackingReply, leapAlarmReply(), leapAlarmReply(), refclockReply(), refclockReply(),
+			trackingReply, trackingReply, leapAlarmReply(), trackingReply), v3)
+		want := []string{
+			`^error: .*chronyd is not synchronised$`,
+			`^error: .*chronyd follows a local reference`,
+			`^info: .* succeeded$`,
+			`^error: .*chronyd is not synchronised$`,
+			`^info: .* succeeded$`,
+			// once, though each timeout names its own socket's port
+			`^error: .*i/o timeout$`,
+		}
+
+		require.Eventually(t, func() bool { return len(pollLines()) >= len(want) }, 5*time.Second, 10*time.Millisecond)
+		// three more timeouts, none of them logged
+		time.Sleep(3 * interval)
+		lines := pollLines()
+		require.Len(t, lines, len(want))
+		for i, w := range want {
+			require.Regexp(t, w, lines[i])
+		}
 	})
 
 	for _, tc := range []struct {
