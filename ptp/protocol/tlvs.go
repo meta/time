@@ -378,17 +378,16 @@ func (t *AlternateTimeOffsetIndicatorTLV) MarshalBinaryTo(b []byte) (int, error)
 	binary.BigEndian.PutUint32(b[tlvHeadSize+5:], uint32(t.JumpSeconds))
 	copy(b[tlvHeadSize+9:], t.TimeOfNextJump[:]) //uint48
 	size := tlvHeadSize + 15
-	if t.DisplayName != "" {
-		dd, err := t.DisplayName.MarshalBinary()
-		if err != nil {
-			return 0, fmt.Errorf("writing AlternateTimeOffsetIndicatorTLV DisplayName: %w", err)
-		}
-		if len(b) < size+len(dd) {
-			return 0, fmt.Errorf("not enough buffer to marshal AlternateTimeOffsetIndicatorTLV with DisplayName, need %d, have %d", size+len(dd), len(b))
-		}
-		copy(b[tlvHeadSize+15:], dd)
-		size += len(dd)
+	// DisplayName is always present on the wire, an empty one is a single zero length octet
+	dd, err := t.DisplayName.MarshalBinary()
+	if err != nil {
+		return 0, fmt.Errorf("writing AlternateTimeOffsetIndicatorTLV DisplayName: %w", err)
 	}
+	if len(b) < size+len(dd) {
+		return 0, fmt.Errorf("not enough buffer to marshal AlternateTimeOffsetIndicatorTLV with DisplayName, need %d, have %d", size+len(dd), len(b))
+	}
+	copy(b[tlvHeadSize+15:], dd)
+	size += len(dd)
 	return size, nil
 }
 
@@ -397,14 +396,15 @@ func (t *AlternateTimeOffsetIndicatorTLV) UnmarshalBinary(b []byte) error {
 	if err := unmarshalTLVHeader(&t.TLVHead, b); err != nil {
 		return err
 	}
-	if err := checkTLVLength(&t.TLVHead, len(b), 20, false); err != nil {
+	// 15 octets of fixed fields followed by DisplayName, which is at least its length octet
+	if err := checkTLVLength(&t.TLVHead, len(b), 16, false); err != nil {
 		return err
 	}
 	t.KeyField = b[tlvHeadSize]
 	t.CurrentOffset = int32(binary.BigEndian.Uint32(b[tlvHeadSize+1:]))
 	t.JumpSeconds = int32(binary.BigEndian.Uint32(b[tlvHeadSize+5:]))
 	copy(t.TimeOfNextJump[:], b[tlvHeadSize+9:]) // uint48
-	if err := t.DisplayName.UnmarshalBinary(b[tlvHeadSize+15:]); err != nil {
+	if err := t.DisplayName.UnmarshalBinary(b[tlvHeadSize+15 : tlvHeadSize+int(t.LengthField)]); err != nil {
 		return fmt.Errorf("reading AlternateTimeOffsetIndicatorTLV DisplayName: %w", err)
 	}
 	return nil

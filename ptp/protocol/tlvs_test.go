@@ -213,6 +213,53 @@ func TestParseAnnounceWithAlternateTimeOffsetIndicator(t *testing.T) {
 	require.Equal(t, &want, pp)
 }
 
+func TestParseAnnounceWithAlternateTimeOffsetIndicatorEmptyDisplayName(t *testing.T) {
+	// same Announce as above, but the ALTERNATE_TIME_OFFSET_INDICATOR TLV carries an empty displayName,
+	// so its lengthField is 16: 15 octets of fixed fields plus the zero displayName length octet
+	raw := []uint8("\x0b\x12\x00\x54\x00\x00\x04\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x01\x00\x00\x05\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x25\x00\x80\xf8\xfe\xff\xff\x80\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x00\xa0\x00\x09\x00\x10\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x00\x00\x00")
+	packet := new(Announce)
+	err := FromBytes(raw, packet)
+	require.NoError(t, err)
+	want := []TLV{
+		&AlternateTimeOffsetIndicatorTLV{
+			TLVHead: TLVHead{
+				TLVType:     TLVAlternateTimeOffsetIndicator,
+				LengthField: 16,
+			},
+			KeyField:       0x01,
+			CurrentOffset:  37,
+			JumpSeconds:    1,
+			TimeOfNextJump: NewPTPSeconds(time.Unix(1656946102, 0)),
+		},
+	}
+	require.Equal(t, want, packet.TLVs)
+	b, err := Bytes(packet)
+	require.NoError(t, err)
+	require.Equal(t, raw, b)
+}
+
+func TestParseAlternateTimeOffsetIndicatorDisplayNameOverrun(t *testing.T) {
+	// lengthField is 20, but the displayName length octet claims 8 octets,
+	// which would run into the ALTERNATE_RESPONSE_PORT TLV that follows
+	raw := []uint8("\x00\x09\x00\x14\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x08PTP\x00\x80\x01\x00\x02\x00\x05")
+	tlv := &AlternateTimeOffsetIndicatorTLV{}
+	err := tlv.UnmarshalBinary(raw)
+	require.ErrorContains(t, err, "DisplayName")
+}
+
+func TestAlternateTimeOffsetIndicatorOneCharDisplayName(t *testing.T) {
+	// 15 octets of fixed fields, the displayName length octet, one character and one pad octet
+	raw := []uint8("\x00\x09\x00\x12\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x01X\x00")
+	tlv := &AlternateTimeOffsetIndicatorTLV{}
+	err := tlv.UnmarshalBinary(raw)
+	require.NoError(t, err)
+	require.Equal(t, PTPText("X"), tlv.DisplayName)
+	b := make([]byte, len(raw))
+	n, err := tlv.MarshalBinaryTo(b)
+	require.NoError(t, err)
+	require.Equal(t, raw, b[:n])
+}
+
 func TestParseSyncDelayReqWithAlternateResponsePort(t *testing.T) {
 	raw := []byte{1, 18, 0, 50, 0, 0, 36, 0, 0, 0, 0, 0, 6, 32, 0, 2, 0, 0, 0, 0, 184, 206, 246, 255, 254, 68, 148, 144, 0, 1, 149, 17, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 7, 0, 2, 16, 146, 0, 0}
 	packet := new(SyncDelayReq)
