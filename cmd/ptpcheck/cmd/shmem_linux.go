@@ -69,8 +69,10 @@ func shmemPrintText(w io.Writer, data *fbclock.DataFileSnapshot) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Path: %s\nVersion: %d\nSize: %d bytes\n", data.Path, data.Version, data.Size)
 	if header := data.Header; header != nil {
-		fmt.Fprintf(&b, "Header:\n  magic: %q\n  major: %d\n  minor: %d\n  sources: 0x%08x (%s)\n",
-			header.Magic, header.Major, header.Minor, header.Sources, shmemSourcesLabel(header.Sources))
+		// the magic is a C string, ending at its first NUL; the reader rejects any other magic
+		magic, _, _ := strings.Cut(header.Magic, "\x00")
+		fmt.Fprintf(&b, "Header:\n  magic: %s\n  major: %d\n  minor: %d\n  sources: 0x%08x (%s)\n",
+			magic, header.Major, header.Minor, header.Sources, shmemSourcesLabel(header.Sources))
 	}
 	for _, section := range data.Sections {
 		fmt.Fprintf(&b, "\n%s (offset %d):\n  seq: %d\n", section.Name, section.Offset, section.Seq)

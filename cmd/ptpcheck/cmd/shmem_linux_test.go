@@ -152,7 +152,7 @@ func TestShmemTextRawFields(t *testing.T) {
 Version: 3
 Size: 4096 bytes
 Header:
-  magic: "FBCLOCK\x00"
+  magic: FBCLOCK
   major: 3
   minor: 0
   sources: 0x00000081 (ptp|bit_7)
@@ -324,7 +324,7 @@ func TestShmemEmptyAndBusySections(t *testing.T) {
 Version: 3
 Size: 4096 bytes
 Header:
-  magic: "FBCLOCK\x00"
+  magic: FBCLOCK
   major: 3
   minor: 0
   sources: 0x00000000 (none)
