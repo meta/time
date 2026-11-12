@@ -62,6 +62,9 @@ const (
 	// specifically AES-128, so NewAEAD pins the key length.
 	aes128GCMSIVKeySize = 16
 
+	// aesGCMSIVNonceSize is fixed by RFC 8452.
+	aesGCMSIVNonceSize = 12
+
 	// aesGCMSIVTagSize is the AES-GCM-SIV authentication tag length in octets
 	// (RFC 8452, same as AES block size). Used to validate tink output structure
 	// nonce || ciphertext || tag.
@@ -146,22 +149,22 @@ func (a *aesGCMSIV) Seal(ad, plaintext []byte) ([]byte, []byte, error) {
 	if err != nil {
 		return nil, nil, fmt.Errorf("nts: GCM-SIV encrypt: %w", err)
 	}
-	minSealedLen := aeadsubtle.AESGCMSIVNonceSize + aesGCMSIVTagSize
+	minSealedLen := aesGCMSIVNonceSize + aesGCMSIVTagSize
 	if len(sealed) < minSealedLen {
 		return nil, nil, fmt.Errorf("nts: GCM-SIV output %d bytes shorter than minimum %d (nonce+tag)", len(sealed), minSealedLen)
 	}
 	// Return independent copies to avoid slice aliasing hazard:
 	// sealed[:n] has cap=len(sealed), so append to nonce would overwrite ciphertext.
 	// bytes.Clone makes the copy intent explicit (Go 1.20+, Meta targets 1.26).
-	nonce := bytes.Clone(sealed[:aeadsubtle.AESGCMSIVNonceSize])
-	ciphertext := bytes.Clone(sealed[aeadsubtle.AESGCMSIVNonceSize:])
+	nonce := bytes.Clone(sealed[:aesGCMSIVNonceSize])
+	ciphertext := bytes.Clone(sealed[aesGCMSIVNonceSize:])
 	return nonce, ciphertext, nil
 }
 func (a *aesGCMSIV) Open(ad, nonce, ciphertext []byte) ([]byte, error) {
 	// validate nonce len
-	if len(nonce) != aeadsubtle.AESGCMSIVNonceSize {
+	if len(nonce) != aesGCMSIVNonceSize {
 		return nil, fmt.Errorf("%w: GCM-SIV requires %d-byte nonce, got %d",
-			ErrAEADNonceSize, aeadsubtle.AESGCMSIVNonceSize, len(nonce))
+			ErrAEADNonceSize, aesGCMSIVNonceSize, len(nonce))
 	}
 	// Rejoin (nonce || ciphertext || tag) into the blob layout tink expects.
 	// slices.Concat is Go 1.22+ modern idiom for concatenating slices.
