@@ -92,7 +92,10 @@ type UDPConnTS struct {
 	l           sync.Mutex
 	newerKernel bool
 	// ifIndex names the egress interface in a pktinfo, which a zero would override.
-	// Inet6Pktinfo declares it uint32 and Inet4Pktinfo int32, hence both.
+	// Inet6Pktinfo declares it uint32 and Inet4Pktinfo int32 on Linux, hence both.
+	// On non-Linux platforms (darwin, solaris, z/OS) Inet4Pktinfo.Ifindex is
+	// uint32, so setInet4PktinfoIfindex does the per-platform conversion, see
+	// pktinfo_linux.go and pktinfo_notlinux.go.
 	ifIndex  uint32
 	ifIndex4 int32
 }
@@ -239,7 +242,7 @@ func pktInfo4Cmsg(addr *unix.SockaddrInet4, ifIndex int32) []byte {
 	h.SetLen(unix.CmsgLen(unix.SizeofInet4Pktinfo))
 	pktInfo := (*unix.Inet4Pktinfo)(unsafe.Pointer(&b[socketControlMessageHeaderOffset]))
 	copy(pktInfo.Addr[:], addr.Addr[:])
-	pktInfo.Ifindex = ifIndex
+	setInet4PktinfoIfindex(pktInfo, ifIndex)
 	return b
 }
 
