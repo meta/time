@@ -510,8 +510,8 @@ class FBClockDataReaderTest : public testing::Test {
   fbclock_lib lib_ = {.shm_fd = -1};
 };
 
-// PTP, then NTP, if both the caller and the header have it; PRTC never. The
-// bounds tell which section a read came from.
+// PTP, then NTP, if both the caller and the header have it; PRTC never. 0 is
+// ANY. The bounds tell which section a read came from.
 TEST_F(FBClockDataReaderTest, InitPicksPtpThenNtp) {
   constexpr uint32_t kPtpBoundNs = 1000;
   constexpr uint32_t kNtpBoundNs = 1000000;
@@ -527,7 +527,7 @@ TEST_F(FBClockDataReaderTest, InitPicksPtpThenNtp) {
       {kPtpAndNtpHost, FBCLOCK_SOURCE_NTP, FBCLOCK_E_NO_ERROR, kNtpBoundNs},
       {kPtpAndNtpHost, FBCLOCK_SOURCE_PRTC, FBCLOCK_E_NOTSUP, 0},
       {kNtpHost, FBCLOCK_SOURCE_PTP, FBCLOCK_E_NOTSUP, 0},
-      {kNtpHost, 0, FBCLOCK_E_NOTSUP, 0},
+      {kNtpHost, 0, FBCLOCK_E_NO_ERROR, kNtpBoundNs},
       {kNtpHost, FBCLOCK_SOURCE_NTP, FBCLOCK_E_NO_ERROR, kNtpBoundNs},
       {kNtpHost, FBCLOCK_SOURCE_ANY, FBCLOCK_E_NO_ERROR, kNtpBoundNs},
   };

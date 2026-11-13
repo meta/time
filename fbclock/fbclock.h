@@ -265,7 +265,7 @@ typedef struct fbclock_options {
   // exceeds this many ns with FBCLOCK_E_WOU_TOO_BIG. FBCLOCK_MAX_WOU_NS_UNSET
   // (0) keeps the default behavior.
   uint64_t max_wou_ns;
-  // Sources the caller accepts; 0 means FBCLOCK_SOURCE_PTP. Only FBCLOCK_V3
+  // Sources the caller accepts; 0 is ANY on v3, PTP on v2. Only FBCLOCK_V3
   // serves NTP, with windows orders of magnitude wider than PTP's.
   uint32_t sources;
   // FBCLOCK_V3 reads v3 at shm_path (NULL: FBCLOCK_DATA_PATH); any other value

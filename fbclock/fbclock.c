@@ -394,7 +394,7 @@ static int fbclock_init_v3(
   lib->max_wou_ns = options->max_wou_ns;
   const char* path = (shm_path != NULL) ? shm_path : FBCLOCK_DATA_PATH;
   const uint32_t sources =
-      (options->sources != 0) ? options->sources : FBCLOCK_SOURCE_PTP;
+      (options->sources != 0) ? options->sources : FBCLOCK_SOURCE_ANY;
 
   int fd = open(path, O_RDONLY, 0);
   if (fd == -1) {

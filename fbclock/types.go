@@ -36,8 +36,8 @@ type Sources uint32
 
 // Options are caller options applied at init (see fbclock_options)
 type Options struct {
-	// Sources the caller accepts; 0 means SourcePTP. NTP needs NewFBClockV3, and
-	// its windows are orders of magnitude wider than PTP's.
+	// Sources the caller accepts; 0 means SourcePTP on v2 and SourceAny on NewFBClockV3.
+	// NTP needs NewFBClockV3, and its windows are orders of magnitude wider than PTP's.
 	Sources Sources
 }
 
