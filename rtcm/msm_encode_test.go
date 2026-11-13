@@ -350,6 +350,11 @@ func TestEncodeMSM7SignalMaskPerConstellation(t *testing.T) {
 		{"GalileoE5a", GnssGalileo, []uint8{3, 4}, []int{22, 23}},
 		{"GlonassL1L2", GnssGLONASS, []uint8{0, 2}, []int{2, 8}},
 		{"BeidouB1B2", GnssBeiDou, []uint8{0, 2}, []int{2, 14}},
+		{"GalileoE6", GnssGalileo, []uint8{8, 9}, []int{8, 10}},
+		{"BeidouB3IB2a", GnssBeiDou, []uint8{4, 7, 8}, []int{8, 22, 23}},
+		{"BeidouB3ID2", GnssBeiDou, []uint8{10}, []int{8}},
+		{"QZSSL1L2L5", GnssQZSS, []uint8{0, 4, 5, 8, 9}, []int{2, 15, 16, 22, 23}},
+		{"NavICL5", GnssNavIC, []uint8{0}, []int{22}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -382,10 +387,29 @@ func TestEncodeMSM7UnmappedSignalSkipped(t *testing.T) {
 		sigObs(GnssGPS, 4, 0, 20960834.6, 110135576.123),
 		sigObs(GnssGPS, 4, 9, 20960834.9, 85820011.456), // not a mapped signal
 	}
+	before := UnmappedSignals()
 
 	d := decodeMSM7(t, mustEncodeAll(t, obs))
 	require.Equal(t, []int{2}, d.sigs)
 	require.Len(t, d.finePR, 1)
+	require.Equal(t, before+1, UnmappedSignals())
+}
+
+func TestEncodeMSM7QZSSAndNavICMessageTypes(t *testing.T) {
+	tests := []struct {
+		name string
+		gnss uint8
+		want uint16
+	}{
+		{"QZSS", GnssQZSS, 1117},
+		{"NavIC", GnssNavIC, 1137},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			frame := mustEncodeAllGNSS(t, tt.gnss, []RawxObservation{sigObs(tt.gnss, 1, 0, 21000000, 110000000)})
+			require.Equal(t, tt.want, decodeMSM7(t, frame).msgType)
+		})
+	}
 }
 
 // GLONASS rows carry a u-blox freqID (slot k plus 7) and expect FDMA spacing of
@@ -407,6 +431,17 @@ func TestSignalWavelengths(t *testing.T) {
 		{"GalileoE5bQ", GnssGalileo, 6, 0, 1207.14},
 		{"BeidouB1ID1", GnssBeiDou, 0, 0, 1561.098},
 		{"BeidouB2ID2", GnssBeiDou, 3, 0, 1207.14},
+		{"GalileoE6B", GnssGalileo, 8, 0, 1278.75},
+		{"GalileoE6C", GnssGalileo, 9, 0, 1278.75},
+		{"BeidouB3ID1", GnssBeiDou, 4, 0, 1268.52},
+		{"BeidouB3ID2", GnssBeiDou, 10, 0, 1268.52},
+		{"BeidouB2aPilot", GnssBeiDou, 7, 0, 1176.45},
+		{"BeidouB2aData", GnssBeiDou, 8, 0, 1176.45},
+		{"QZSSL2CM", GnssQZSS, 4, 0, 1227.60},
+		{"QZSSL2CL", GnssQZSS, 5, 0, 1227.60},
+		{"QZSSL5I", GnssQZSS, 8, 0, 1176.45},
+		{"QZSSL5Q", GnssQZSS, 9, 0, 1176.45},
+		{"NavICL5A", GnssNavIC, 0, 0, 1176.45},
 		{"GlonassL1Slot0", GnssGLONASS, 0, 7, 1602.0},
 		{"GlonassL1SlotMinus7", GnssGLONASS, 0, 0, 1598.0625},
 		{"GlonassL1SlotPlus6", GnssGLONASS, 0, 13, 1605.375},

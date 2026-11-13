@@ -48,6 +48,7 @@ const (
 	GnssBeiDou  uint8 = 3
 	GnssQZSS    uint8 = 5
 	GnssGLONASS uint8 = 6
+	GnssNavIC   uint8 = 7
 )
 
 // RawxObservation holds one satellite/signal measurement from UBX-RXM-RAWX.

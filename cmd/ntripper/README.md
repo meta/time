@@ -3,9 +3,9 @@
 ntripper reads RTCM3 and UBX-RXM-RAWX data from an oscillatord Unix socket and
 pushes RTCM corrections to an NTRIP caster using the SOURCE protocol.
 
-When RAWX observations are available it generates MSM7 messages with proper
-carrier phase from the raw observations, bypassing the receiver's limited native
-RTCM engine.
+When RAWX observations are available it generates MSM7 messages for GPS,
+GLONASS, Galileo, BeiDou, QZSS and NavIC with proper carrier phase from the raw
+observations, bypassing the receiver's limited native RTCM engine.
 
 ## Usage
 

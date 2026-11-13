@@ -487,6 +487,7 @@ func streamFrames(
 					"frames_sent", frameCount,
 					"dropped_sats", rtcm.DroppedSats(),
 					"weak_signals", rtcm.WeakSignals(),
+					"unmapped_signals", rtcm.UnmappedSignals(),
 					"non_finite_pseudoranges", rtcm.NonFinitePseudoranges(),
 					"voided_rough_ranges", rtcm.VoidedRoughRanges(),
 					"voided_rough_rates", rtcm.VoidedRoughRates(),
@@ -499,7 +500,7 @@ func streamFrames(
 			}
 
 			// Per-constellation MSM epoch time (30-bit DF004-style field):
-			//   GPS/Galileo: GPS time of week (ms).
+			//   GPS/Galileo/QZSS/NavIC: GPS time of week (ms).
 			//   BeiDou: BeiDou time = GPS time - 14 s.
 			//   GLONASS: 3-bit day-of-week | 27-bit ms-of-day in GLONASS time
 			//            (UTC + 3 h); GLONASS time = GPS time - leap seconds + 3 h.
@@ -519,6 +520,8 @@ func streamFrames(
 				{rtcm.GnssGalileo, gpsTowMs},
 				{rtcm.GnssGLONASS, gloEpoch},
 				{rtcm.GnssBeiDou, bdsEpoch},
+				{rtcm.GnssQZSS, gpsTowMs},
+				{rtcm.GnssNavIC, gpsTowMs},
 			}
 			var msmFrames [][]byte
 			for _, g := range gens {
@@ -654,7 +657,7 @@ func rawxStats(ctx context.Context, sockConn net.Conn, logger *slog.Logger) erro
 	logger.Info("rawx-stats: sampling RAWX signals from socket")
 	scanner := rtcm.NewMixedScanner(sockConn)
 
-	gnssName := map[uint8]string{0: "GPS", 1: "SBAS", 2: "GAL", 3: "BDS", 5: "QZSS", 6: "GLO"}
+	gnssName := map[uint8]string{0: "GPS", 1: "SBAS", 2: "GAL", 3: "BDS", 5: "QZSS", 6: "GLO", 7: "NAVIC"}
 	type key struct {
 		gnss uint8
 		sig  uint8

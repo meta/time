@@ -76,10 +76,26 @@ const (
 
 // GNSS signal wavelengths in meters, keyed by u-blox sigID.
 var signalWavelength = map[uint8]map[uint8]float64{
-	GnssGPS:     {0: speedOfLight / 1575.42e6, 3: speedOfLight / 1227.60e6, 4: speedOfLight / 1227.60e6, 6: speedOfLight / 1176.45e6, 7: speedOfLight / 1176.45e6},
-	GnssGalileo: {0: speedOfLight / 1575.42e6, 1: speedOfLight / 1575.42e6, 3: speedOfLight / 1176.45e6, 4: speedOfLight / 1176.45e6, 5: speedOfLight / 1207.14e6, 6: speedOfLight / 1207.14e6},
+	GnssGPS: {0: speedOfLight / 1575.42e6, 3: speedOfLight / 1227.60e6, 4: speedOfLight / 1227.60e6, 6: speedOfLight / 1176.45e6, 7: speedOfLight / 1176.45e6},
+	GnssGalileo: {
+		0: speedOfLight / 1575.42e6, 1: speedOfLight / 1575.42e6, // E1
+		3: speedOfLight / 1176.45e6, 4: speedOfLight / 1176.45e6, // E5a
+		5: speedOfLight / 1207.14e6, 6: speedOfLight / 1207.14e6, // E5b
+		8: speedOfLight / 1278.75e6, 9: speedOfLight / 1278.75e6, // E6
+	},
 	GnssGLONASS: {0: speedOfLight / 1602.0e6, 2: speedOfLight / 1246.0e6},
-	GnssBeiDou:  {0: speedOfLight / 1561.098e6, 1: speedOfLight / 1561.098e6, 2: speedOfLight / 1207.14e6, 3: speedOfLight / 1207.14e6},
+	GnssBeiDou: {
+		0: speedOfLight / 1561.098e6, 1: speedOfLight / 1561.098e6, // B1I
+		2: speedOfLight / 1207.14e6, 3: speedOfLight / 1207.14e6, // B2I
+		4: speedOfLight / 1268.52e6, 10: speedOfLight / 1268.52e6, // B3I
+		7: speedOfLight / 1176.45e6, 8: speedOfLight / 1176.45e6, // B2a
+	},
+	GnssQZSS: {
+		0: speedOfLight / 1575.42e6,                              // L1C/A
+		4: speedOfLight / 1227.60e6, 5: speedOfLight / 1227.60e6, // L2C
+		8: speedOfLight / 1176.45e6, 9: speedOfLight / 1176.45e6, // L5
+	},
+	GnssNavIC: {0: speedOfLight / 1176.45e6},
 }
 
 // MSM7 message types per constellation.
@@ -87,18 +103,20 @@ var msm7MsgType = map[uint8]uint16{
 	GnssGPS:     1077,
 	GnssGLONASS: 1087,
 	GnssGalileo: 1097,
+	GnssQZSS:    1117,
 	GnssBeiDou:  1127,
+	GnssNavIC:   1137,
 }
 
-// Signal ID to MSM signal mask bit index mapping (DF395).
-// Bit position is 0-based from MSB (bit 0 = signal 1, bit 1 = signal 2, etc.)
-// Values are the RTCM signal number minus one, per RTCM 10403.x tables 3.5-91
-// (GPS), 3.5-97 (GLONASS), 3.5-100 (Galileo), 3.5-106 (BeiDou).
+// u-blox sigID to DF395 mask bit (bit 0 = RTCM signal 1): the RTCM signal ID minus
+// one, from the RTCM 10403.3 MSM signal tables, as in RTKLIB's msm_sig_* arrays.
 var signalMaskBit = map[uint8]map[uint8]int{
-	GnssGPS:     {0: 1, 3: 15, 4: 14, 6: 21, 7: 22},       // 1C, 2L, 2S, 5I, 5Q
-	GnssGalileo: {0: 1, 1: 3, 3: 21, 4: 22, 5: 13, 6: 14}, // 1C, 1B, 5I, 5Q, 7I, 7Q
-	GnssGLONASS: {0: 1, 2: 7},                             // 1C, 2C
-	GnssBeiDou:  {0: 1, 1: 1, 2: 13, 3: 13},               // 1I, 7I; D1/D2 share a signal
+	GnssGPS:     {0: 1, 3: 15, 4: 14, 6: 21, 7: 22},                    // 1C, 2L, 2S, 5I, 5Q
+	GnssGalileo: {0: 1, 1: 3, 3: 21, 4: 22, 5: 13, 6: 14, 8: 9, 9: 7},  // 1C, 1B, 5I, 5Q, 7I, 7Q, 6B, 6C
+	GnssGLONASS: {0: 1, 2: 7},                                          // 1C, 2C
+	GnssBeiDou:  {0: 1, 1: 1, 2: 13, 3: 13, 4: 7, 7: 22, 8: 21, 10: 7}, // 2I, 7I, 6I, 5P, 5D; D1/D2 share a signal
+	GnssQZSS:    {0: 1, 4: 14, 5: 15, 8: 21, 9: 22},                    // 1C, 2S, 2L, 5I, 5Q
+	GnssNavIC:   {0: 21},                                               // 5A
 }
 
 // satSig keys an observation by satellite and signal mask bit.
@@ -121,6 +139,10 @@ var (
 	// weakSignals counts observations dropped by the minimum CNO threshold.
 	weakSignals atomic.Uint64
 
+	// unmappedSignals counts observations of a signal with no RTCM mapping here:
+	// tracked by the receiver, never sent to the caster.
+	unmappedSignals atomic.Uint64
+
 	voidedRoughRanges     atomic.Uint64
 	voidedRoughRates      atomic.Uint64
 	voidedFinePRs         atomic.Uint64
@@ -142,6 +164,12 @@ func SetMinCNO(cno uint) {
 // falling below the minimum CNO.
 func WeakSignals() uint64 {
 	return weakSignals.Load()
+}
+
+// UnmappedSignals returns the cumulative number of observations dropped because
+// their signal has no RTCM MSM mapping.
+func UnmappedSignals() uint64 {
+	return unmappedSignals.Load()
 }
 
 // DroppedSats returns the cumulative number of satellites dropped to fit the
@@ -249,7 +277,8 @@ func EncodeMSM7(stationID uint16, gnssID uint8, epochMs uint32, obs []RawxObserv
 		}
 		// Only include observations with a known signal mask bit mapping.
 		if _, ok := bits[obs[i].SigID]; !ok {
-			continue // unmapped signal ID, skip
+			unmappedSignals.Add(1)
+			continue
 		}
 		o := obs[i]
 		// A corrupt phase costs the cell only DF406; its pseudorange still ships.
