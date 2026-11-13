@@ -49,7 +49,7 @@ func shmemTestV3File(t *testing.T, clock fbclock.DataClock) string {
 	require.NoError(t, file.Close())
 	fixture, err := os.OpenFile(path, os.O_WRONLY, 0)
 	require.NoError(t, err)
-	_, err = fixture.WriteAt(binary.LittleEndian.AppendUint32(nil, shmemTestSources), 12)
+	_, err = fixture.WriteAt(binary.NativeEndian.AppendUint32(nil, shmemTestSources), 12)
 	require.NoError(t, err)
 	require.NoError(t, fixture.Close())
 	return path

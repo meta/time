@@ -111,7 +111,7 @@ func TestReadFBClockDataV3Raw(t *testing.T) {
 	reserved := [12]uint8{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}
 	dataReadPatch(t, path, 9, 6)
 	// The header offers bit 5 too, which this reader doesn't know.
-	dataReadPatch(t, path, 12, binary.LittleEndian.AppendUint32(nil, uint32(SourcePTP)|1<<5)...)
+	dataReadPatch(t, path, 12, binary.NativeEndian.AppendUint32(nil, uint32(SourcePTP)|1<<5)...)
 	dataReadPatch(t, path, dataReadOffset(SourcePTP)+52, reserved[:]...)
 	before, err := os.ReadFile(path)
 	require.NoError(t, err)
@@ -214,9 +214,9 @@ func TestReadFBClockDataSpareSections(t *testing.T) {
 	dataReadPatch(t, path, dataReadOffset(1<<3), ntpLine...)
 	dataReadPatch(t, path, dataReadOffset(1<<31), ntpLine...)
 	dataReadPatch(t, path, 40*64, ntpLine...) // line 40 has no bit, so it's no section
-	dataReadPatch(t, path, dataReadOffset(1<<4), binary.LittleEndian.AppendUint64(nil, 9)...)
-	dataReadPatch(t, path, dataReadOffset(1<<5), binary.LittleEndian.AppendUint64(nil, 2)...)
-	dataReadPatch(t, path, 12, binary.LittleEndian.AppendUint32(nil, 1<<6)...)
+	dataReadPatch(t, path, dataReadOffset(1<<4), binary.NativeEndian.AppendUint64(nil, 9)...)
+	dataReadPatch(t, path, dataReadOffset(1<<5), binary.NativeEndian.AppendUint64(nil, 2)...)
+	dataReadPatch(t, path, 12, binary.NativeEndian.AppendUint32(nil, 1<<6)...)
 	snapshot, err := ReadFBClockDataFile(path, false)
 	require.NoError(t, err)
 	names := make([]string, 0, len(snapshot.Sections))
@@ -258,7 +258,7 @@ func TestReadFBClockDataUnreadableSections(t *testing.T) {
 			} else {
 				path = dataReadV3Fixture(t, nil)
 			}
-			dataReadPatch(t, path, offset, binary.LittleEndian.AppendUint64(nil, 7)...)
+			dataReadPatch(t, path, offset, binary.NativeEndian.AppendUint64(nil, 7)...)
 			snapshot, err := ReadFBClockDataFile(path, v2)
 			require.NoError(t, err)
 			require.Zero(t, snapshot.Sections[0].Seq)

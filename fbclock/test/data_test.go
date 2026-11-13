@@ -53,19 +53,19 @@ func requireDataHeader(t *testing.T, raw []byte, sources lib.Sources) {
 	require.Equal(t, byte(3), raw[8])
 	require.Equal(t, byte(0), raw[9])
 	require.Equal(t, make([]byte, 2), raw[10:12])
-	require.Equal(t, uint32(sources), binary.LittleEndian.Uint32(raw[12:16]))
+	require.Equal(t, uint32(sources), binary.NativeEndian.Uint32(raw[12:16]))
 	require.Equal(t, make([]byte, 48), raw[16:64])
 }
 
 func dataSnapshotSeq(raw []byte, source lib.Sources) uint64 {
 	offset := dataOffset(source)
-	return binary.LittleEndian.Uint64(raw[offset : offset+8])
+	return binary.NativeEndian.Uint64(raw[offset : offset+8])
 }
 
 func dataInt64(t *testing.T, raw []byte) int64 {
 	t.Helper()
 	var value int64
-	_, err := binary.Decode(raw, binary.LittleEndian, &value)
+	_, err := binary.Decode(raw, binary.NativeEndian, &value)
 	require.NoError(t, err)
 	return value
 }
@@ -78,10 +78,10 @@ func dataClockFromBytes(t *testing.T, raw []byte, source lib.Sources) lib.DataCl
 		RefTimeNS:            dataInt64(t, section[8:16]),
 		SysclockTimeNS:       dataInt64(t, section[16:24]),
 		CoefPPB:              dataInt64(t, section[24:32]),
-		ClockID:              binary.LittleEndian.Uint32(section[32:36]),
-		ErrorBoundNS:         uint64(binary.LittleEndian.Uint32(section[36:40])),
+		ClockID:              binary.NativeEndian.Uint32(section[32:36]),
+		ErrorBoundNS:         uint64(binary.NativeEndian.Uint32(section[36:40])),
 		IngressTimeNS:        dataInt64(t, section[40:48]),
-		HoldoverMultiplierNS: lib.Uint32AsFloat(binary.LittleEndian.Uint32(section[48:52])),
+		HoldoverMultiplierNS: lib.Uint32AsFloat(binary.NativeEndian.Uint32(section[48:52])),
 	}
 }
 
@@ -274,7 +274,7 @@ func TestFBClockDataForeignFile(t *testing.T) {
 				raw[7] = 'X'
 			}
 			for offset := 64; offset+64 <= len(raw); offset += 64 {
-				binary.LittleEndian.PutUint64(raw[offset:offset+8], 8)
+				binary.NativeEndian.PutUint64(raw[offset:offset+8], 8)
 			}
 			require.NoError(t, os.WriteFile(path, raw, 0o600))
 			beforeInfo, err := os.Stat(path)
@@ -303,7 +303,7 @@ func TestFBClockDataOddSequenceRecovery(t *testing.T) {
 	raw := dataSnapshot(t, path)
 	oddSeq := dataSnapshotSeq(raw, lib.SourcePTP) | 1
 	ptp := dataOffset(lib.SourcePTP)
-	binary.LittleEndian.PutUint64(raw[ptp:ptp+8], oddSeq)
+	binary.NativeEndian.PutUint64(raw[ptp:ptp+8], oddSeq)
 	require.NoError(t, os.WriteFile(path, raw, 0o600))
 
 	file, err = lib.OpenFBClockDataCustom(path, sources)
@@ -361,7 +361,7 @@ func TestFBClockDataUnusableHoldoverIsTooBig(t *testing.T) {
 		clock.HoldoverMultiplierNS = rate
 		require.NoError(t, file.Store(lib.SourcePTP, clock))
 		raw := dataSnapshot(t, path)
-		require.Equal(t, want, binary.LittleEndian.Uint32(raw[holdover:holdover+4]), "rate %v", rate)
+		require.Equal(t, want, binary.NativeEndian.Uint32(raw[holdover:holdover+4]), "rate %v", rate)
 	}
 }
 
@@ -382,7 +382,7 @@ func TestFBClockDataOversizedErrorBoundIsTooBig(t *testing.T) {
 		clock.ErrorBoundNS = errorBound
 		require.NoError(t, file.Store(lib.SourcePTP, clock))
 		raw := dataSnapshot(t, path)
-		require.Equal(t, want, binary.LittleEndian.Uint32(raw[bound:bound+4]), "bound %d", errorBound)
+		require.Equal(t, want, binary.NativeEndian.Uint32(raw[bound:bound+4]), "bound %d", errorBound)
 	}
 }
 
@@ -396,7 +396,7 @@ func TestFBClockDataClearsAnUnservedSectionLeftMidWrite(t *testing.T) {
 	raw := dataSnapshot(t, path)
 	oddSeq := dataSnapshotSeq(raw, lib.SourceNTP) | 1
 	ntp := dataOffset(lib.SourceNTP)
-	binary.LittleEndian.PutUint64(raw[ntp:ntp+8], oddSeq)
+	binary.NativeEndian.PutUint64(raw[ntp:ntp+8], oddSeq)
 	require.NoError(t, os.WriteFile(path, raw, 0o600))
 
 	file, err = lib.OpenFBClockDataCustom(path, nil)
