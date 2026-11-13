@@ -3,7 +3,6 @@
 [![lint](https://github.com/facebook/time/actions/workflows/lint.yml/badge.svg)](https://github.com/facebook/time/actions/workflows/lint.yml)
 [![test](https://github.com/facebook/time/actions/workflows/test.yml/badge.svg)](https://github.com/facebook/time/actions/workflows/test.yml)
 [![codecov](https://codecov.io/gh/facebook/time/branch/main/graph/badge.svg?token=vucpIU4aIq)](https://codecov.io/gh/facebook/time)
-[![Go Report Card](https://goreportcard.com/badge/github.com/facebook/time)](https://goreportcard.com/report/github.com/facebook/time)
 ![GitHub go.mod Go version](https://img.shields.io/github/go-mod/go-version/facebook/time)
 [![GoDoc](https://pkg.go.dev/badge/github.com/facebook/time?status.svg)](https://pkg.go.dev/github.com/facebook/time?tab=doc)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
