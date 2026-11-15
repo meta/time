@@ -1169,6 +1169,28 @@ func TestEncodeMSM7GlonassUnknownFrequencyChannel(t *testing.T) {
 	require.Equal(t, []uint32{glonassFreqUnknown}, decodeMSM7(t, frame).extInfo)
 }
 
+// u-blox reports a GLONASS satellite whose slot number is not known yet as
+// svId 255. The satellite mask has no bit for it, so its data must not reach
+// the frame, where it would shift every field of the other satellites.
+func TestEncodeMSM7SkipsGlonassUnknownSlot(t *testing.T) {
+	obs := []RawxObservation{
+		{PrMes: 19500000, CpMes: carrierPhaseCycles(GnssGLONASS, 0, 12, 19500000), DoMes: 1500, GnssID: GnssGLONASS, SvID: 3, SigID: 0, FreqID: 12, Locktime: 63000, CNO: 44, PrValid: true, CpValid: true, HalfCyc: true},
+		{PrMes: 21000000, CpMes: carrierPhaseCycles(GnssGLONASS, 0, 8, 21000000), DoMes: -2000, GnssID: GnssGLONASS, SvID: 7, SigID: 0, FreqID: 8, Locktime: 63000, CNO: 41, PrValid: true, CpValid: true, HalfCyc: true},
+	}
+	want, err := EncodeMSM7(7, GnssGLONASS, 288093000, obs)
+	require.NoError(t, err)
+
+	unknownSlot := RawxObservation{
+		PrMes: 22500000, CpMes: carrierPhaseCycles(GnssGLONASS, 0, 9, 22500000), DoMes: 800,
+		GnssID: GnssGLONASS, SvID: 255, SigID: 0, FreqID: 9,
+		Locktime: 63000, CNO: 30, PrValid: true, CpValid: true, HalfCyc: true,
+	}
+	frame, err := EncodeMSM7(7, GnssGLONASS, 288093000, append(obs, unknownSlot))
+	require.NoError(t, err)
+	require.Equal(t, []int{3, 7}, decodeMSM7(t, frame).sats)
+	require.Equal(t, want, frame, "the unknown-slot observation leaves the frame unchanged")
+}
+
 // Extended satellite info is reserved outside GLONASS.
 func TestEncodeMSM7ExtendedInfoZeroForNonGlonass(t *testing.T) {
 	const rangeM = 22000000.0

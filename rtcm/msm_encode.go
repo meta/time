@@ -250,6 +250,12 @@ func EncodeMSM7(stationID uint16, gnssID uint8, epochMs uint32, obs []RawxObserv
 		if obs[i].GnssID != gnssID {
 			continue
 		}
+		// The satellite mask covers IDs 1-64. u-blox reports a GLONASS
+		// satellite whose slot number is not known yet as svId 255; it has no
+		// mask bit, and encoding its data anyway shifts every later field.
+		if obs[i].SvID < 1 || obs[i].SvID > msmMaxSatellite {
+			continue
+		}
 		// Skip ghost observations. u-blox receivers report satellites they
 		// track for timing without RF acquisition as zero-valued measurements
 		// (PrMes=0, CpMes=0, CNO=0). Encoding them yields all-zero MSM cells
