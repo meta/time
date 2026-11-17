@@ -50,6 +50,8 @@ const (
 	// nsPerSecondPerPPM converts a frequency error in PPM into ns of drift per
 	// second: 1 PPM = 1e-6 s/s = 1000 ns/s.
 	nsPerSecondPerPPM float64 = 1000.0
+	// anchorInterval is how often v2's shm and v3's sections get fresh anchors.
+	anchorInterval = 100 * time.Millisecond
 )
 
 var errNotEnoughData = errors.New("not enough data points")
@@ -663,13 +665,13 @@ func storePTPDataV3(v3 *fbclock.DataFile, source fbclock.Sources, clock fbclock.
 	}
 }
 
-// populatePTPDataV3 writes v3's ptp and prtc sections every 10 ms: the PTP loop's last
-// sample anchored on this loop's own PHC readings, as populateDataV2 does for v2.
+// populatePTPDataV3 writes v3's ptp and prtc sections every anchorInterval: the PTP loop's
+// last sample anchored on this loop's own PHC readings, as populateDataV2 does for v2.
 func (s *Daemon) populatePTPDataV3(v3 *fbclock.DataFile) {
 	prevPTP := fbclock.DataClock{}
 	prevPRTC := fbclock.DataClock{}
 
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(anchorInterval)
 	defer ticker.Stop()
 	for ; true; <-ticker.C { // first run without delay, then at interval
 		d := s.state.getLastStoredData()
@@ -781,7 +783,8 @@ func storeNTPDataV3(v3 *fbclock.DataFile, sample *ntpSample, now time.Time) erro
 }
 
 // populateNTPDataV3 writes v3's ntp section until ctx is done: it polls chronyd every -i and
-// rewrites the section every 10 ms from the last good poll, or refused under a local reference.
+// rewrites the section every anchorInterval from the last good poll, or refused under a
+// local reference.
 func (s *Daemon) populateNTPDataV3(ctx context.Context, fetcher *ChronyFetcher, v3 *fbclock.DataFile) {
 	var last atomic.Pointer[ntpSample]
 	var wg sync.WaitGroup
@@ -820,7 +823,7 @@ func (s *Daemon) populateNTPDataV3(ctx context.Context, fetcher *ChronyFetcher, 
 		}
 	})
 
-	ticker := time.NewTicker(10 * time.Millisecond)
+	ticker := time.NewTicker(anchorInterval)
 	defer ticker.Stop()
 	for {
 		// nothing before the first good poll; after it, holdover from its ingress
@@ -842,7 +845,7 @@ func (s *Daemon) populateDataV2(shmv2 *fbclock.Shm) {
 	prevPrimary := fbclock.DataV2{}
 	prevRealtime := fbclock.DataV2{}
 
-	fastTicker := time.NewTicker(10 * time.Millisecond)
+	fastTicker := time.NewTicker(anchorInterval)
 	defer fastTicker.Stop()
 	for ; true; <-fastTicker.C { // first run without delay, then at interval
 		d := s.state.getLastStoredData()

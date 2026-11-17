@@ -174,7 +174,7 @@ int writer_thread_v2(int sfd_rw, int tries) {
     data.holdover_multiplier_ns = data.ingress_time_ns * 3;
     data.phc_time_ns += 10000;
     data.sysclock_time_ns += 10000;
-    usleep(10000); // sleep 10ms - this will be the normal case
+    usleep(10000); // sleep 10ms, more often than the daemon's 100ms
   }
   return 0;
 }
@@ -619,8 +619,8 @@ TEST(fbclockTest, test_fbclock_calculate_time_v2_holdover_grows_while_stale) {
 }
 
 TEST(fbclockTest, test_fbclock_calculate_time_v2_backwards_phc_keeps_a_window) {
-  // -1010101010 is what the daemon's calcCoeffPPB returns, with no error, for
-  // a 1 s backward CLOCK_REALTIME step against 10 ms of PHC. Dating holdover
+  // -1111111111 is what the daemon's calcCoeffPPB returns, with no error, for
+  // a 1 s backward CLOCK_REALTIME step against 100 ms of PHC. Dating holdover
   // from the estimate puts it before ingress, and a negative holdover would
   // reach fbclock_window_of_uncertainty's cast to uint64_t.
   fbclock_clockdata_v2 state = {
@@ -628,7 +628,7 @@ TEST(fbclockTest, test_fbclock_calculate_time_v2_backwards_phc_keeps_a_window) {
       .clockId = CLOCK_MONOTONIC_RAW,
       .phc_time_ns = 1647269082944150996, // anchor 1 ms after ingress
       .sysclock_time_ns = 1000000000,
-      .coef_ppb = -1010101010,
+      .coef_ppb = -1111111111,
   };
   double error_bound = 172.0;
   double h_value = 50.5;
@@ -643,10 +643,10 @@ TEST(fbclockTest, test_fbclock_calculate_time_v2_backwards_phc_keeps_a_window) {
           &truetime,
           FBCLOCK_TAI),
       FBCLOCK_E_NO_ERROR);
-  // 5 s * (1 - 1.010101010) walks the estimate 50505050 ns backwards.
+  // 5 s * (1 - 1.111111111) walks the estimate 555555555 ns backwards.
   EXPECT_EQ(
       fbclock_truetime_midpoint_ns(&truetime),
-      (uint64_t)(state.phc_time_ns - 50505050));
+      (uint64_t)(state.phc_time_ns - 555555555));
   EXPECT_EQ(truetime.latest_ns - truetime.earliest_ns, 344ULL);
 }
 

@@ -731,7 +731,7 @@ TEST_F(FBClockDataReaderTest, GettimeAppliesTheRateCoefficient) {
 }
 
 // Holdover runs from the poll's ingress, not from the anchor the daemon
-// rewrites every 10 ms.
+// rewrites every 100 ms.
 TEST_F(FBClockDataReaderTest, GettimeWidensWithHoldover) {
   fbclock_data_header_store(&writer_->header, kNtpHost);
   ASSERT_EQ(openLib(FBCLOCK_SOURCE_NTP), FBCLOCK_E_NO_ERROR);

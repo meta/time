@@ -64,8 +64,8 @@ typedef atomic_uint_fast64_t atomic_uint64;
 // Fixed UTC-TAI offset - used when data not present in shared memory
 #define UTC_TAI_OFFSET_NS (int64_t)(-37e9)
 // Maximum gap (ns) between cached daemon sysclock sample and current sysclock
-// before the V2 client refuses to extrapolate. Daemon updates every 10 ms; this
-// is a 1000x failsafe — if the daemon is dead or the snapshot is corrupt,
+// before the V2 client refuses to extrapolate. Daemon updates every 100 ms;
+// this is a 100x failsafe — if the daemon is dead or the snapshot is corrupt,
 // extrapolation error is unbounded so we'd rather return an error.
 #define FBCLOCK_MAX_EXTRAPOLATION_NS (int64_t)(10000000000)
 

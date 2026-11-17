@@ -21,6 +21,7 @@ import (
 	"math"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/facebook/time/fbclock"
 	"github.com/facebook/time/ptp/linearizability"
@@ -41,13 +42,12 @@ type daemonState struct {
 }
 
 // coefPPBRingSize is the number of extrapolation coefficients averaged into the
-// mean coefficient. The primary anchor is refreshed by the fixed 10ms fastTicker
-// in populateDataV2, so 100 samples cover ~1s of holdover — validated to smooth
-// extended holdover (up to 30s) without hurting short-interval precision. It is
-// sized against that fixed tick on purpose, decoupled from the ptp4l sampling
-// interval that sizes the other rings, so an unrelated sampling knob can't
-// silently retune the holdover extrapolation window.
-const coefPPBRingSize = 100
+// mean coefficient: one per anchor over ~1s, the span validated to smooth
+// extended holdover (up to 30s). It is sized against anchorInterval on purpose,
+// decoupled from the ptp4l sampling interval that sizes the other rings, so an
+// unrelated sampling knob can't silently retune the holdover extrapolation
+// window.
+const coefPPBRingSize = int(time.Second / anchorInterval)
 
 func newDaemonState(ringSize int) *daemonState {
 	s := &daemonState{

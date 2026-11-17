@@ -236,7 +236,7 @@ func TestPopulateNTPDataV3(t *testing.T) {
 
 	t.Run("holds over while chronyd is down", func(t *testing.T) {
 		// the fake answers the first poll only; the rest time out after half of -i
-		const interval = 100 * time.Millisecond
+		const interval = 3 * anchorInterval
 		s, v3, path := ntpTestDaemon(t, interval)
 		startNTP(t, s, fakeChronyd(t, trackingReply), v3)
 		first := ntpSection(t, path)
@@ -247,8 +247,8 @@ func TestPopulateNTPDataV3(t *testing.T) {
 			return err == nil && later != nil && later.SysclockTimeNS > first.Clock.SysclockTimeNS+int64(3*interval)
 		}, 5*time.Second, 10*time.Millisecond)
 		later := ntpSection(t, path)
-		// over 3 intervals of 10 ms writes, not one per (timed out) poll
-		require.GreaterOrEqual(t, later.Seq-first.Seq, uint64(2*10))
+		// over 3 intervals of 3 anchor writes each, not one per (timed out) poll
+		require.GreaterOrEqual(t, later.Seq-first.Seq, uint64(2*6))
 		require.Equal(t, first.Clock.IngressTimeNS, later.Clock.IngressTimeNS)
 		require.Equal(t, first.Clock.ErrorBoundNS, later.Clock.ErrorBoundNS)
 		require.Equal(t, first.Clock.HoldoverMultiplierRaw, later.Clock.HoldoverMultiplierRaw)
@@ -265,7 +265,7 @@ func TestPopulateNTPDataV3(t *testing.T) {
 		refused := ntpSection(t, path)
 		time.Sleep(3 * interval)
 		later := ntpSection(t, path)
-		// still rewritten every 10 ms, with the bound readers refuse
+		// still rewritten, with the bound readers refuse
 		require.Greater(t, later.Seq, refused.Seq)
 		require.Equal(t, uint64(math.MaxUint32), later.Clock.ErrorBoundNS)
 	})
