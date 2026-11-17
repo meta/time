@@ -121,6 +121,11 @@ func EnableHWTimestamps(_ int, _ *net.Interface) error {
 	return errors.New("hardware timestamping is not supported on this platform")
 }
 
+// ReportSkippedTX is not supported on this platform.
+func ReportSkippedTX(_ int) error {
+	return errors.New("TX timestamping is not supported on this platform")
+}
+
 // EnableHWTimestampsRx is not supported on this platform.
 func EnableHWTimestampsRx(_ int, _ *net.Interface) error {
 	return errors.New("hardware RX timestamping is not supported on this platform")

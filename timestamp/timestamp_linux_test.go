@@ -599,3 +599,69 @@ func TestSocketControlMessageRXDrops(t *testing.T) {
 		t.Skip("This test supports amd64 platform only")
 	}
 }
+
+func recvErrCmsg(seqID uint32) []byte {
+	size := int(unsafe.Sizeof(unix.SockExtendedErr{}))
+	b := make([]byte, unix.CmsgSpace(size))
+	h := (*unix.Cmsghdr)(unsafe.Pointer(&b[0]))
+	h.Level = unix.SOL_IP
+	h.Type = unix.IP_RECVERR
+	h.SetLen(unix.CmsgLen(size))
+	se := (*unix.SockExtendedErr)(unsafe.Pointer(&b[socketControlMessageHeaderOffset]))
+	se.Errno = uint32(unix.ENOMSG)
+	se.Data = seqID
+	return b
+}
+
+func TestSocketControlMessageSeqIDTimestampSkipped(t *testing.T) {
+	b := recvErrCmsg(3248)
+
+	_, err := socketControlMessageSeqIDTimestamp(b, len(b), 3248)
+	require.ErrorIs(t, err, ErrTXTSSkipped)
+
+	_, err = socketControlMessageSeqIDTimestamp(b, len(b), 3249)
+	require.ErrorIs(t, err, ErrNoTimestamp)
+}
+
+func TestReportSkippedTX(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		flags   int
+		wantErr error
+	}{
+		{
+			name:  "software",
+			flags: unix.SOF_TIMESTAMPING_SOFTWARE | unix.SOF_TIMESTAMPING_OPT_ID | unix.SOF_TIMESTAMPING_OPT_TSONLY,
+		},
+		{
+			name: "hardware",
+			flags: unix.SOF_TIMESTAMPING_TX_HARDWARE | unix.SOF_TIMESTAMPING_RX_HARDWARE |
+				unix.SOF_TIMESTAMPING_RAW_HARDWARE | unix.SOF_TIMESTAMPING_OPT_ID | unix.SOF_TIMESTAMPING_OPT_TSONLY,
+			wantErr: ErrTXTSSkipped,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			conn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1")})
+			require.NoError(t, err)
+			t.Cleanup(func() { conn.Close() })
+			connFd, err := ConnFd(conn)
+			require.NoError(t, err)
+
+			require.NoError(t, unix.SetsockoptInt(connFd, unix.SOL_SOCKET, timestamping, tt.flags))
+			require.NoError(t, ReportSkippedTX(connFd))
+
+			got, err := unix.GetsockoptInt(connFd, unix.SOL_SOCKET, unix.SO_TIMESTAMPING)
+			require.NoError(t, err)
+			require.Equal(t, tt.flags|unix.SOF_TIMESTAMPING_TX_SOFTWARE, got)
+
+			for range 2 {
+				_, err = conn.WriteTo([]byte{1}, conn.LocalAddr())
+				require.NoError(t, err)
+			}
+			ts, attempts, err := ReadTimeStampSeqIDBuf(connFd, make([]byte, ControlSizeBytes), 1)
+			require.ErrorIs(t, err, tt.wantErr)
+			require.Equal(t, tt.wantErr == nil, !ts.IsZero())
+			require.Equal(t, 1, attempts)
+		})
+	}
+}
