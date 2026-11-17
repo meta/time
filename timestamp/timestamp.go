@@ -70,6 +70,9 @@ var timestampToString = map[Timestamp]string{
 // ErrNoTimestamp is returned when no timestamp is found in the socket control message
 var ErrNoTimestamp = errors.New("failed to find timestamp in socket control message")
 
+// ErrTXTSSkipped is returned when the NIC sent the packet without a TX timestamp, see ReportSkippedTX
+var ErrTXTSSkipped = errors.New("packet was sent without a TX timestamp")
+
 // ErrNoTimestampForMulticastPkt is returned when no timestamp is found in the socket control message and destination address is multicast
 var ErrNoTimestampForMulticastPkt = errors.New("failed to find timestamp in socket control message (multicast packet)")
 

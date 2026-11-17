@@ -109,6 +109,9 @@ func (s *sendWorker) listen() (eventFD, generalFD int, err error) {
 	if err := timestamp.EnableTimestamps(s.config.TimestampType, eventFD, iface); err != nil {
 		return -1, -1, err
 	}
+	if err := timestamp.ReportSkippedTX(eventFD); err != nil {
+		return -1, -1, err
+	}
 
 	// set up general connection
 	generalFD, err = unix.Socket(domain, unix.SOCK_DGRAM, unix.IPPROTO_UDP)

@@ -214,6 +214,17 @@ func EnableHWTimestampsRx(connFd int, iface *net.Interface) error {
 	return unix.SetsockoptInt(connFd, unix.SOL_SOCKET, unix.SO_SELECT_ERR_QUEUE, 1)
 }
 
+// ReportSkippedTX makes the kernel report packets the NIC sent without a hardware TX timestamp, so
+// ReadTimeStampSeqIDBuf returns ErrTXTSSkipped at once instead of waiting for a timestamp that never comes
+func ReportSkippedTX(connFd int) error {
+	flags, err := unix.GetsockoptInt(connFd, unix.SOL_SOCKET, unix.SO_TIMESTAMPING)
+	if err != nil {
+		return fmt.Errorf("reading timestamping flags: %w", err)
+	}
+	// the kernel drops the software TX timestamp whenever the driver takes a hardware one
+	return unix.SetsockoptInt(connFd, unix.SOL_SOCKET, timestamping, flags|unix.SOF_TIMESTAMPING_TX_SOFTWARE)
+}
+
 // SeqIDSocketControlMessage encodes the SequenceID into a socket control message
 // and specifies SCM_TS_OPT_ID as the Control Message Header type
 func SeqIDSocketControlMessage(seqID uint32, soob []byte) {
@@ -342,6 +353,7 @@ func socketControlMessageSeqIDTimestamp(b []byte, tboob int, seqID uint32) (time
 	mlen := 0
 	tstamp := time.Time{}
 	cseq := uint32(0)
+	seqFound := false
 	var err error
 	for i := 0; i < tboob; i += unix.CmsgSpace(mlen - unix.SizeofCmsghdr) {
 		h := (*unix.Cmsghdr)(unsafe.Pointer(&b[i]))
@@ -361,9 +373,13 @@ func socketControlMessageSeqIDTimestamp(b []byte, tboob int, seqID uint32) (time
 			if err != nil {
 				return time.Time{}, ErrNoTimestamp
 			}
+			seqFound = true
 		}
 	}
 	if tstamp.IsZero() {
+		if seqFound && cseq == seqID {
+			return time.Time{}, ErrTXTSSkipped
+		}
 		return time.Time{}, ErrNoTimestamp
 	}
 	if cseq == seqID {
@@ -429,8 +445,9 @@ func ReadTimeStampSeqIDBuf(connFd int, toob []byte, seqID uint32) (time.Time, in
 			continue
 		}
 
-		if timestamp, err := socketControlMessageSeqIDTimestamp(toob, tboob, seqID); err == nil {
-			return timestamp, attempts, nil
+		timestamp, err := socketControlMessageSeqIDTimestamp(toob, tboob, seqID)
+		if err == nil || errors.Is(err, ErrTXTSSkipped) {
+			return timestamp, attempts, err
 		}
 	}
 	timeout := time.Since(timeStart)
