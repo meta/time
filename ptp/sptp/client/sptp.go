@@ -345,6 +345,11 @@ func (p *SPTP) ptping(sourceIP netip.Addr, sourcePort int, response []byte, rxtx
 	if err := ptp.FromBytes(response, b); err != nil {
 		return fmt.Errorf("failed to read DELAY_REQ %w", err)
 	}
+	// a probe is a bare DELAY_REQ. A SYNC, or the stamped DELAY_REQ handleDelayReq
+	// sends, is another host's answer, and answering it back loops between the two
+	if b.MessageType() != ptp.MessageDelayReq || !b.OriginTimestamp.Empty() {
+		return fmt.Errorf("not a ptping request: %s with origin %s", b.MessageType(), b.OriginTimestamp)
+	}
 	// use first event connection, doesn't really matter which one we use
 	c, err := NewClient(sourceIP, sourcePort, p.clockID, p.eventConns[0], p.genConn, p.cfg, p.stats)
 	if err != nil {
@@ -559,7 +564,7 @@ func (p *SPTP) RunListener(ctx context.Context) error {
 					if !found {
 						log.Warningf("[%s] ignoring packets from unknown server, trying ptping", ip)
 						// Try ptping
-						if err = p.ptping(ip, timestamp.SockaddrToPort(addr), buf, rxtx); err != nil {
+						if err = p.ptping(ip, timestamp.SockaddrToPort(addr), buf[:bbuf], rxtx); err != nil {
 							log.Warningf("[%s] ptping error: %v", ip, err)
 						}
 						continue

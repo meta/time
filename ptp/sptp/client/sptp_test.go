@@ -22,6 +22,8 @@ import (
 	"github.com/facebook/time/timestamp"
 	"net"
 	"net/netip"
+	"slices"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1003,11 +1005,98 @@ func TestPTPing(t *testing.T) {
 	err := p.ptping(ip, 1234, response, time.Time{})
 	require.Equal(t, "failed to read DELAY_REQ not enough data to decode SyncDelayReq", err.Error())
 
-	b := &ptp.SyncDelayReq{}
-	response, err = b.MarshalBinary()
+	response, err = ReqDelay(ptp.ClockIdentity(0xbb), 1).MarshalBinary()
 	require.Nil(t, err)
 	err = p.ptping(ip, 1234, response, time.Time{})
 	require.Nil(t, err)
+}
+
+// two hosts that don't sync to each other must not keep answering each other's
+// answers: one spoofed probe would otherwise start a loop that never ends
+func TestPtpingIgnoresReplies(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockEventConn := NewMockUDPConnWithTS(ctrl)
+	mockGenConn := NewMockUDPConnNoTS(ctrl)
+	var reply []byte
+	mockEventConn.EXPECT().WriteToWithTS(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(b []byte, _, _ unix.Sockaddr, _ uint16) (time.Time, error) {
+			reply = slices.Clone(b)
+			return time.Now(), nil
+		})
+	mockGenConn.EXPECT().WriteTo(gomock.Any(), gomock.Any())
+	p := &SPTP{
+		cfg:        &Config{Iface: "lo"},
+		genConn:    mockGenConn,
+		eventConns: []UDPConnWithTS{mockEventConn},
+	}
+	peer := netip.MustParseAddr("1.2.3.4")
+
+	probe, err := ReqDelay(ptp.ClockIdentity(0xbb), 1).MarshalBinary()
+	require.NoError(t, err)
+	require.NoError(t, p.ptping(peer, ptp.PortEvent, probe, time.Now()))
+
+	// what we just sent, as another sptp answering us would send it
+	require.ErrorContains(t, p.ptping(peer, ptp.PortEvent, reply, time.Now()), "not a ptping request")
+
+	// a GM we don't sync to answers a DELAY_REQ with a SYNC
+	sync := ReqDelay(ptp.ClockIdentity(0xcc), 1)
+	sync.SdoIDAndMsgType = ptp.NewSdoIDAndMsgType(ptp.MessageSync, 0)
+	sync.OriginTimestamp = ptp.NewTimestamp(time.Now())
+	b, err := sync.MarshalBinary()
+	require.NoError(t, err)
+	require.ErrorContains(t, p.ptping(peer, ptp.PortEvent, b, time.Now()), "not a ptping request")
+}
+
+// ptping parses the datagram, not the rest of the receive buffer behind it
+func TestRunListenerPtpingShortDatagram(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+	mockEventConn := NewMockUDPConnWithTS(ctrl)
+	mockEventConn.EXPECT().ConnFd().Return(0)
+	var read atomic.Bool
+	mockEventConn.EXPECT().ReadPacketBuf(gomock.Any(), gomock.Any()).DoAndReturn(func(b, _ []byte) (int, int, unix.Sockaddr, error) {
+		if read.Swap(true) {
+			time.Sleep(2 * defaultTestTimeout) // idle socket; ctx cancels the listener
+			return 0, 0, &unix.SockaddrInet4{}, nil
+		}
+		// a lone DELAY_REQ type octet from a host we don't sync to
+		b[0] = byte(ptp.MessageDelayReq)
+		return 1, 0, &unix.SockaddrInet4{Addr: [4]byte{198, 51, 100, 7}, Port: 4242}, nil
+	}).AnyTimes()
+	mockEventConn.EXPECT().RXTimestamp(gomock.Any(), gomock.Any()).Return(time.Now(), nil).AnyTimes()
+	var sent atomic.Int32
+	mockEventConn.EXPECT().WriteToWithTS(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ []byte, _, _ unix.Sockaddr, _ uint16) (time.Time, error) {
+			sent.Add(1)
+			return time.Now(), nil
+		}).AnyTimes()
+	mockGenConn := NewMockUDPConnNoTS(ctrl)
+	mockGenConn.EXPECT().ReadPacketBuf(gomock.Any()).DoAndReturn(func(_ []byte) (int, netip.Addr, error) {
+		time.Sleep(2 * defaultTestTimeout)
+		return 0, netip.MustParseAddr("4.4.4.4"), nil
+	}).AnyTimes()
+	mockGenConn.EXPECT().WriteTo(gomock.Any(), gomock.Any()).DoAndReturn(func(b []byte, _ unix.Sockaddr) (int, error) {
+		sent.Add(1)
+		return len(b), nil
+	}).AnyTimes()
+
+	p := &SPTP{
+		stats: NewMockStatsServer(ctrl),
+		cfg: &Config{
+			Iface:    "lo",
+			Interval: time.Second,
+			Servers:  map[string]int{"192.168.0.10": 1},
+		},
+		eventConns: []UDPConnWithTS{mockEventConn},
+		genConn:    mockGenConn,
+	}
+	require.NoError(t, p.initClients())
+	ctx, cancel := context.WithTimeout(context.Background(), defaultTestTimeout)
+	defer cancel()
+	require.ErrorIs(t, p.RunListener(ctx), context.DeadlineExceeded)
+	require.True(t, read.Load())
+	require.Zero(t, sent.Load(), "a 1-octet datagram must not be answered")
 }
 
 func TestShiftPriorities(t *testing.T) {
