@@ -428,6 +428,12 @@ func TestPTPText(t *testing.T) {
 	}
 }
 
+// A length octet of 255 must hit the length check, not wrap past it in uint8
+func TestPTPTextMaxLengthTooShort(t *testing.T) {
+	var text PTPText
+	require.EqualError(t, text.UnmarshalBinary([]byte{255, 'x'}), "text field is too short, need 256 got 2")
+}
+
 func TestPortAddress(t *testing.T) {
 	tests := []struct {
 		name      string

@@ -24,6 +24,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	// Announce carrying an ALTERNATE_TIME_OFFSET_INDICATOR TLV with displayName "PTP"
+	announceWithATOI = []uint8("\x0b\x12\x00\x5a\x00\x00\x04\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x01\x00\x00\x05\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x25\x00\x80\xf8\xfe\xff\xff\x80\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x00\xa0\x00\x09\x00\x16\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x03\x50\x54\x50\x00\x00\x00")
+	// the same Announce with an empty displayName, so the TLV lengthField is 16
+	announceWithATOIEmptyName = []uint8("\x0b\x12\x00\x54\x00\x00\x04\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x01\x00\x00\x05\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x25\x00\x80\xf8\xfe\xff\xff\x80\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x00\xa0\x00\x09\x00\x10\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x00\x00\x00")
+)
+
 func TestTLVHeadType(t *testing.T) {
 	head := &TLVHead{
 		TLVType:     TLVRequestUnicastTransmission,
@@ -155,7 +162,7 @@ func TestParseAnnounceWithPathTrace(t *testing.T) {
 }
 
 func TestParseAnnounceWithAlternateTimeOffsetIndicator(t *testing.T) {
-	raw := []uint8("\x0b\x12\x00\x5a\x00\x00\x04\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x01\x00\x00\x05\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x25\x00\x80\xf8\xfe\xff\xff\x80\x08\xc0\xeb\xff\xfe\x63\x7a\x4e\x00\x00\xa0\x00\x09\x00\x16\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x03\x50\x54\x50\x00\x00\x00")
+	raw := announceWithATOI
 	packet := new(Announce)
 	err := FromBytes(raw, packet)
 	require.Nil(t, err)
@@ -211,6 +218,51 @@ func TestParseAnnounceWithAlternateTimeOffsetIndicator(t *testing.T) {
 	pp, err := DecodePacket(raw)
 	require.Nil(t, err)
 	require.Equal(t, &want, pp)
+}
+
+func TestParseAnnounceWithAlternateTimeOffsetIndicatorEmptyDisplayName(t *testing.T) {
+	raw := announceWithATOIEmptyName
+	packet := new(Announce)
+	err := FromBytes(raw, packet)
+	require.NoError(t, err)
+	want := []TLV{
+		&AlternateTimeOffsetIndicatorTLV{
+			TLVHead: TLVHead{
+				TLVType:     TLVAlternateTimeOffsetIndicator,
+				LengthField: 16,
+			},
+			KeyField:       0x01,
+			CurrentOffset:  37,
+			JumpSeconds:    1,
+			TimeOfNextJump: NewPTPSeconds(time.Unix(1656946102, 0)),
+		},
+	}
+	require.Equal(t, want, packet.TLVs)
+	b, err := Bytes(packet)
+	require.NoError(t, err)
+	require.Equal(t, raw, b)
+}
+
+func TestParseAlternateTimeOffsetIndicatorDisplayNameOverrun(t *testing.T) {
+	// lengthField is 20, but the displayName length octet claims 8 octets,
+	// which would run into the ALTERNATE_RESPONSE_PORT TLV that follows
+	raw := []uint8("\x00\x09\x00\x14\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x08PTP\x00\x20\x07\x00\x02\x00\x05")
+	tlv := &AlternateTimeOffsetIndicatorTLV{}
+	err := tlv.UnmarshalBinary(raw)
+	require.ErrorContains(t, err, "DisplayName")
+}
+
+func TestAlternateTimeOffsetIndicatorOneCharDisplayName(t *testing.T) {
+	// 15 octets of fixed fields, the displayName length octet, one character and one pad octet
+	raw := []uint8("\x00\x09\x00\x12\x01\x00\x00\x00\x25\x00\x00\x00\x01\x00\x00\x62\xc2\xfd\xb6\x01X\x00")
+	tlv := &AlternateTimeOffsetIndicatorTLV{}
+	err := tlv.UnmarshalBinary(raw)
+	require.NoError(t, err)
+	require.Equal(t, PTPText("X"), tlv.DisplayName)
+	b := make([]byte, len(raw))
+	n, err := tlv.MarshalBinaryTo(b)
+	require.NoError(t, err)
+	require.Equal(t, raw, b[:n])
 }
 
 func TestParseSyncDelayReqWithAlternateResponsePort(t *testing.T) {

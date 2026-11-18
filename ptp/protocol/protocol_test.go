@@ -646,7 +646,10 @@ func FuzzDecodePacket(f *testing.F) {
 		0x00, 0x08, 0x00, 0x06, 0x20, 0x01, 0x00, 0x00, 0x00, 0x00,
 		0x00, 0x00,
 	}
-	for _, seed := range [][]byte{{}, {0}, {9}, delayResp, managementDefaultDataSet, signalingGrantUnicast, managementErrorStatus} {
+	for _, seed := range [][]byte{
+		{}, {0}, {9}, delayResp, managementDefaultDataSet, signalingGrantUnicast, managementErrorStatus,
+		announceWithATOI, announceWithATOIEmptyName,
+	} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {

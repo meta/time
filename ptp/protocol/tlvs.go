@@ -378,17 +378,19 @@ func (t *AlternateTimeOffsetIndicatorTLV) MarshalBinaryTo(b []byte) (int, error)
 	binary.BigEndian.PutUint32(b[tlvHeadSize+5:], uint32(t.JumpSeconds))
 	copy(b[tlvHeadSize+9:], t.TimeOfNextJump[:]) //uint48
 	size := tlvHeadSize + 15
+	// the length octet is mandatory, so an empty DisplayName is a single zero octet
+	dd := []byte{0}
 	if t.DisplayName != "" {
-		dd, err := t.DisplayName.MarshalBinary()
-		if err != nil {
+		var err error
+		if dd, err = t.DisplayName.MarshalBinary(); err != nil {
 			return 0, fmt.Errorf("writing AlternateTimeOffsetIndicatorTLV DisplayName: %w", err)
 		}
-		if len(b) < size+len(dd) {
-			return 0, fmt.Errorf("not enough buffer to marshal AlternateTimeOffsetIndicatorTLV with DisplayName, need %d, have %d", size+len(dd), len(b))
-		}
-		copy(b[tlvHeadSize+15:], dd)
-		size += len(dd)
 	}
+	if len(b) < size+len(dd) {
+		return 0, fmt.Errorf("not enough buffer to marshal AlternateTimeOffsetIndicatorTLV with DisplayName, need %d, have %d", size+len(dd), len(b))
+	}
+	copy(b[tlvHeadSize+15:], dd)
+	size += len(dd)
 	return size, nil
 }
 
@@ -397,7 +399,8 @@ func (t *AlternateTimeOffsetIndicatorTLV) UnmarshalBinary(b []byte) error {
 	if err := unmarshalTLVHeader(&t.TLVHead, b); err != nil {
 		return err
 	}
-	if err := checkTLVLength(&t.TLVHead, len(b), 20, false); err != nil {
+	// 15 octets of fixed fields followed by DisplayName, which is at least its length octet
+	if err := checkTLVLength(&t.TLVHead, len(b), 16, false); err != nil {
 		return err
 	}
 	t.KeyField = b[tlvHeadSize]
@@ -406,6 +409,9 @@ func (t *AlternateTimeOffsetIndicatorTLV) UnmarshalBinary(b []byte) error {
 	copy(t.TimeOfNextJump[:], b[tlvHeadSize+9:]) // uint48
 	if err := t.DisplayName.UnmarshalBinary(b[tlvHeadSize+15:]); err != nil {
 		return fmt.Errorf("reading AlternateTimeOffsetIndicatorTLV DisplayName: %w", err)
+	}
+	if need := 15 + 1 + len(t.DisplayName); need > int(t.LengthField) {
+		return fmt.Errorf("AlternateTimeOffsetIndicatorTLV DisplayName needs lengthField of at least %d, got %d", need, t.LengthField)
 	}
 	return nil
 }

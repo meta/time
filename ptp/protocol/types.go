@@ -620,8 +620,8 @@ func (p *PTPText) UnmarshalBinary(rawBytes []byte) error {
 		return nil
 	}
 
-	if len(rawBytes) < int(length+1) {
-		return fmt.Errorf("text field is too short, need %d got %d", len(rawBytes), length+1)
+	if len(rawBytes) < int(length)+1 {
+		return fmt.Errorf("text field is too short, need %d got %d", int(length)+1, len(rawBytes))
 	}
 	text := make([]byte, length)
 	if err := binary.Read(reader, binary.BigEndian, text); err != nil {
