@@ -415,6 +415,14 @@ int fbclock_gettime_past_utc(
 uint64_t fbclock_truetime_midpoint_ns(
     const fbclock_truetime* _Nonnull truetime);
 
+// This process's v2 reads that found the section mid-write (not yet written
+// doesn't count) and retried, and how many then gave up with -8.
+typedef struct fbclock_read_stats {
+  uint64_t retried;
+  uint64_t gave_up;
+} fbclock_read_stats;
+fbclock_read_stats fbclock_get_read_stats(void);
+
 // turn error code into err msg
 const char* fbclock_strerror(int err_code);
 

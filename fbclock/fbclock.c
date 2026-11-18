@@ -280,6 +280,26 @@ int fbclock_clockdata_load_data(
   return FBCLOCK_E_NO_ERROR;
 }
 
+// Process-wide, and only touched when a read meets a write, so other reads stay
+// as cheap.
+typedef struct fbclock_read_counts {
+  atomic_uint64 retried;
+  atomic_uint64 gave_up;
+} fbclock_read_counts;
+
+static fbclock_read_counts* fbclock_reads(void) {
+  static fbclock_read_counts reads;
+  return &reads;
+}
+
+fbclock_read_stats fbclock_get_read_stats(void) {
+  fbclock_read_counts* reads = fbclock_reads();
+  return (fbclock_read_stats){
+      .retried = atomic_load_explicit(&reads->retried, memory_order_relaxed),
+      .gave_up = atomic_load_explicit(&reads->gave_up, memory_order_relaxed),
+  };
+}
+
 // Reads one anchor section under its seqlock, retrying on torn reads. Primary
 // reads also retry uninitialized data for cold-start compatibility.
 static int fbclock_section_load(
@@ -289,6 +309,7 @@ static int fbclock_section_load(
   if (section == NULL || data == NULL) {
     return FBCLOCK_E_NO_DATA;
   }
+  int met_write = 0;
   for (int i = 0; i < FBCLOCK_MAX_READ_TRIES; i++) {
     uint64_t seq = fbclock_seq_read_begin(&section->seq);
     if (!seq) { // 0 value means uninitialized
@@ -299,13 +320,24 @@ static int fbclock_section_load(
       continue;
     }
     if (seq & 1) {
+      met_write = 1;
       continue;
     }
     *data = section->data;
     if (!fbclock_seq_read_retry(&section->seq, seq)) {
+      if (met_write) {
+        atomic_fetch_add_explicit(
+            &fbclock_reads()->retried, 1, memory_order_relaxed);
+      }
       fbclock_debug_print("reading clock data took %d tries\n", i + 1);
       return FBCLOCK_E_NO_ERROR;
     }
+    met_write = 1;
+  }
+  if (met_write) {
+    fbclock_read_counts* reads = fbclock_reads();
+    atomic_fetch_add_explicit(&reads->retried, 1, memory_order_relaxed);
+    atomic_fetch_add_explicit(&reads->gave_up, 1, memory_order_relaxed);
   }
   fbclock_debug_print(
       "failed to read clock data after %d tries\n", FBCLOCK_MAX_READ_TRIES);

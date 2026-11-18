@@ -20,6 +20,8 @@ limitations under the License.
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <future>
@@ -259,8 +261,66 @@ TEST(fbclockTest, test_uninitialized_primary_section_returns_crc_mismatch) {
   atomic_store(&shmp.primary.seq, 0);
   fbclock_clockdata_v2 data = {};
 
+  const auto before = fbclock_get_read_stats();
   EXPECT_EQ(
       fbclock_clockdata_load_data_v2(&shmp, &data), FBCLOCK_E_CRC_MISMATCH);
+  // Waiting for the daemon's first write isn't meeting a write.
+  EXPECT_EQ(fbclock_get_read_stats().gave_up, before.gave_up);
+}
+
+// A write that never ends, as a writer stopped between its two seq stores.
+TEST(fbclockTest, test_read_stats_count_a_read_that_gives_up) {
+  fbclock_shmdata_v2 shmp = {};
+  atomic_store(&shmp.primary.seq, 3);
+  fbclock_clockdata_v2 data = {};
+
+  const auto before = fbclock_get_read_stats();
+  EXPECT_EQ(
+      fbclock_clockdata_load_data_v2(&shmp, &data), FBCLOCK_E_CRC_MISMATCH);
+  const auto after = fbclock_get_read_stats();
+  EXPECT_EQ(after.retried, before.retried + 1);
+  EXPECT_EQ(after.gave_up, before.gave_up + 1);
+}
+
+// Reads racing a writer that stores back to back meet a write sooner or later.
+TEST(fbclockTest, test_read_stats_count_a_read_that_retries) {
+  char path[] = "/tmp/fbclock_testXXXXXX";
+  const int fd = mkstemp(path);
+  ASSERT_GE(fd, 0);
+  ASSERT_EQ(ftruncate(fd, FBCLOCK_SHMDATA_V2_SIZE), 0);
+  fbclock_clockdata_v2 data = {.ingress_time_ns = 1, .error_bound_ns = 1};
+  ASSERT_EQ(fbclock_clockdata_store_data_v2(fd, &data, nullptr), 0);
+  auto* shmp = static_cast<fbclock_shmdata_v2*>(
+      mmap(nullptr, FBCLOCK_SHMDATA_V2_SIZE, PROT_READ, MAP_SHARED, fd, 0));
+  ASSERT_NE(shmp, MAP_FAILED);
+
+  std::atomic<bool> done{false};
+  std::thread writer([&] {
+    fbclock_clockdata_v2 next = data;
+    while (!done.load()) {
+      next.ingress_time_ns++;
+      fbclock_clockdata_store_data_v2(fd, &next, nullptr);
+    }
+  });
+  // Only this thread reads, so the counts change with its own reads alone.
+  const auto until =
+      std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  fbclock_clockdata_v2 copy = {};
+  bool retried_and_read = false;
+  while (!retried_and_read && std::chrono::steady_clock::now() < until) {
+    const auto before = fbclock_get_read_stats();
+    const int rc = fbclock_clockdata_load_data_v2(shmp, &copy);
+    const auto after = fbclock_get_read_stats();
+    retried_and_read = rc == FBCLOCK_E_NO_ERROR &&
+        after.retried == before.retried + 1 && after.gave_up == before.gave_up;
+  }
+  done.store(true);
+  writer.join();
+  EXPECT_TRUE(retried_and_read);
+
+  munmap(shmp, FBCLOCK_SHMDATA_V2_SIZE);
+  close(fd);
+  remove(path);
 }
 
 TEST(fbclockTest, test_gettime_past_uninitialized_primary_returns_no_data) {
