@@ -41,7 +41,9 @@ func NewPrometheusExporter(listenPort int, sptpPort int, scrapeInterval time.Dur
 	return &PrometheusExporter{registry: prometheus.NewRegistry(), interval: scrapeInterval, listenPort: listenPort, sptpPort: sptpPort}
 }
 
-// Start starts the exporter
+// Start starts the exporter. The mux must not be http.DefaultServeMux: the
+// sptp-exporter binary links net/http/pprof, whose init registers the profiling
+// endpoints there, and this port listens on every interface.
 func (e *PrometheusExporter) Start() {
 	go func() {
 		e.scrapeMetrics()
@@ -49,7 +51,8 @@ func (e *PrometheusExporter) Start() {
 		time.Sleep(e.interval)
 	}()
 
-	http.Handle("/metrics", promhttp.HandlerFor(
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", promhttp.HandlerFor(
 		e.registry,
 		promhttp.HandlerOpts{
 			// Opt into OpenMetrics to support exemplars.
@@ -57,7 +60,7 @@ func (e *PrometheusExporter) Start() {
 		},
 	))
 
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", e.listenPort), nil))
+	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%d", e.listenPort), mux))
 }
 
 func (e *PrometheusExporter) scrapeMetrics() {
