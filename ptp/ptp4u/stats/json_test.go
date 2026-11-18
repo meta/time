@@ -291,6 +291,25 @@ func TestJSONExport(t *testing.T) {
 	require.Equal(t, expectedMap, data)
 }
 
+func TestJSONStatsRXDrops(t *testing.T) {
+	stats := NewJSONStats(2)
+	stats.SetRXDrops(0, 5)
+	stats.SetRXDrops(1, 7)
+	stats.Snapshot()
+
+	// every reader gets the total, not only the first after a Snapshot
+	require.Equal(t, int64(12), stats.reportSnapshot()["rxdrops"])
+	require.Equal(t, int64(12), stats.reportSnapshot()["rxdrops"])
+
+	// Snapshots with no read in between don't add up, and worker 1 still
+	// counts after an interval without packets
+	stats.SetRXDrops(0, 9)
+	stats.Snapshot()
+	stats.SetRXDrops(0, 9)
+	stats.Snapshot()
+	require.Equal(t, int64(16), stats.reportSnapshot()["rxdrops"])
+}
+
 func TestJSONStatsSetMinMaxCF_PositiveMax(t *testing.T) {
 	stats := NewJSONStats(1)
 

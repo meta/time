@@ -31,7 +31,6 @@ import (
 type JSONStats struct {
 	// reportLock guards report, which Snapshot writes from the metric
 	// reporting goroutine while handleRequest reads it from the http server's.
-	// It cannot be an RWMutex: toMap also writes, because it drains rxDrops.
 	reportLock sync.Mutex
 	report     counters
 
@@ -81,8 +80,9 @@ func (s *JSONStats) Snapshot() {
 	s.report.reload = atomic.SwapInt64(&s.reload, 0)
 	s.report.txtsMissing = atomic.SwapInt64(&s.txtsMissing, 0)
 	s.report.minMaxCF = atomic.SwapInt64(&s.minMaxCF, 0)
+	// socket drop counts are cumulative: copy without clearing
 	for k := range s.rxDrops.m {
-		s.report.rxDrops.add(0, s.rxDrops.get(k))
+		s.report.rxDrops.store(k, s.rxDrops.load(k))
 	}
 }
 

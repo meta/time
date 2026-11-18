@@ -76,7 +76,7 @@ func TestSyncMapInt64Counters(t *testing.T) {
 	c.reload = 1
 	c.txtsMissing = 5
 	c.minMaxCF = 6969
-	c.rxDrops.add(0, 11)
+	c.rxDrops.store(0, 11)
 
 	require.Equal(t, int64(1), c.subscriptions.load(1))
 	require.Equal(t, int64(1), c.rx.load(1))
@@ -93,7 +93,7 @@ func TestSyncMapInt64Counters(t *testing.T) {
 	require.Equal(t, int64(1), c.reload)
 	require.Equal(t, int64(5), c.txtsMissing)
 	require.Equal(t, int64(6969), c.minMaxCF)
-	require.Equal(t, int64(11), c.rxDrops.get(0))
+	require.Equal(t, int64(11), c.rxDrops.load(0))
 
 	c.reset()
 
@@ -112,7 +112,7 @@ func TestSyncMapInt64Counters(t *testing.T) {
 	require.Equal(t, int64(0), c.reload)
 	require.Equal(t, int64(0), c.txtsMissing)
 	require.Equal(t, int64(0), c.minMaxCF)
-	require.Equal(t, int64(0), c.rxDrops.get(0))
+	require.Equal(t, int64(0), c.rxDrops.load(0))
 }
 
 func TestCountersToMap(t *testing.T) {
@@ -130,7 +130,7 @@ func TestCountersToMap(t *testing.T) {
 	c.reload = 2
 	c.txtsMissing = 5
 	c.minMaxCF = 6969
-	c.rxDrops.add(0, 69)
+	c.rxDrops.store(0, 69)
 
 	result := c.toMap()
 

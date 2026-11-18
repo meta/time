@@ -131,22 +131,17 @@ func (s *relaxedMapInt64) init(cnt int) {
 	s.m = make([]int64, cnt)
 }
 
-// add increments the counter by v for the given key (assumption that worker runs in 1 thread)
-func (s *relaxedMapInt64) add(key int, v int64) {
-	atomic.AddInt64(&s.m[key], v)
-}
-
 // store sets the counter to v for the given key (assumption that worker runs in 1 thread)
 func (s *relaxedMapInt64) store(key int, v int64) {
 	atomic.SwapInt64(&s.m[key], v)
 }
 
-// get returns current value of counter and atomically re-inits it
-func (s *relaxedMapInt64) get(key int) int64 {
-	return atomic.SwapInt64(&(s.m[key]), 0)
+// load returns the current value of the counter for the given key
+func (s *relaxedMapInt64) load(key int) int64 {
+	return atomic.LoadInt64(&s.m[key])
 }
 
-// get returns current value of counter and atomically re-inits it
+// reset atomically sets all the counters to 0
 func (s *relaxedMapInt64) reset() {
 	for k := range s.m {
 		atomic.SwapInt64(&(s.m[k]), 0)
@@ -355,7 +350,7 @@ func (c *counters) toMap() (export map[string]int64) {
 
 	var drops int64
 	for k := range c.rxDrops.m {
-		drops = max(drops, c.rxDrops.get(k))
+		drops += c.rxDrops.load(k)
 	}
 	res["rxdrops"] = drops
 
