@@ -143,6 +143,10 @@ var (
 	// tracked by the receiver, never sent to the caster.
 	unmappedSignals atomic.Uint64
 
+	// unmaskedSats counts observations dropped because their svId has no bit in the
+	// 64-bit satellite mask, such as a GLONASS satellite whose slot is unknown (255).
+	unmaskedSats atomic.Uint64
+
 	voidedRoughRanges     atomic.Uint64
 	voidedRoughRates      atomic.Uint64
 	voidedFinePRs         atomic.Uint64
@@ -170,6 +174,12 @@ func WeakSignals() uint64 {
 // their signal has no RTCM MSM mapping.
 func UnmappedSignals() uint64 {
 	return unmappedSignals.Load()
+}
+
+// UnmaskedSats returns the cumulative number of observations dropped because
+// their svId is outside the 1-64 range the MSM satellite mask can represent.
+func UnmaskedSats() uint64 {
+	return unmaskedSats.Load()
 }
 
 // DroppedSats returns the cumulative number of satellites dropped to fit the
@@ -263,6 +273,12 @@ func EncodeMSM7(stationID uint16, gnssID uint8, epochMs uint32, obs []RawxObserv
 		// magnitude check or corrupt data is discarded as a ghost, uncounted.
 		if !isFinite(obs[i].PrMes) {
 			nonFinitePseudoranges.Add(1)
+			continue
+		}
+		// The satellite mask has no bit outside svId 1-64, such as u-blox's 255 for a
+		// GLONASS slot not known yet. Encoding one anyway shifts every later field.
+		if obs[i].SvID < 1 || obs[i].SvID > msmMaxSatellite {
+			unmaskedSats.Add(1)
 			continue
 		}
 		// Below this the receiver still reports a pseudorange but rarely a

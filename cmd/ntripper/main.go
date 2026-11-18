@@ -488,6 +488,7 @@ func streamFrames(
 					"dropped_sats", rtcm.DroppedSats(),
 					"weak_signals", rtcm.WeakSignals(),
 					"unmapped_signals", rtcm.UnmappedSignals(),
+					"unmasked_sats", rtcm.UnmaskedSats(),
 					"non_finite_pseudoranges", rtcm.NonFinitePseudoranges(),
 					"voided_rough_ranges", rtcm.VoidedRoughRanges(),
 					"voided_rough_rates", rtcm.VoidedRoughRates(),
