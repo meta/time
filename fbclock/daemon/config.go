@@ -47,6 +47,7 @@ type Config struct {
 	EnableDataV2                   bool          // enable fbclock data v2
 	EnableDataV3                   bool          // also write fbclock data v3, /run/fbclock/data
 	GradualWindow                  bool          // publish a widened window from the first sample after restart (default off)
+	TimingStats                    bool          // report timing stats, for now how long data v2 writes keep the primary section mid-write (default off)
 	MaxDriftRate                   float64       // floor for chronyd's holdover multiplier, in PPM
 	// kFactors is the precomputed warm-up tolerance-factor table k[2..RingSize], looked up per tick.
 	kFactors []float64

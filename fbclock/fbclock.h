@@ -283,8 +283,12 @@ typedef struct fbclock_lib {
 } fbclock_lib;
 
 int fbclock_clockdata_store_data(uint32_t fd, fbclock_clockdata* data);
-// Writes the primary anchor section.
-int fbclock_clockdata_store_data_v2(uint32_t fd, fbclock_clockdata_v2* data);
+// Writes the primary anchor section. write_ns, if not NULL, gets how long the
+// section was mid-write.
+int fbclock_clockdata_store_data_v2(
+    uint32_t fd,
+    fbclock_clockdata_v2* data,
+    uint64_t* write_ns);
 // Writes the realtime anchor section, used on hosts whose primary is
 // MONOTONIC_RAW. The daemon writes it separately from (and after) the primary
 // section; when the primary is already REALTIME it is skipped.

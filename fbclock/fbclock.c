@@ -195,19 +195,39 @@ static int fbclock_seq_read_retry(
   return seq != atomic_load(seqp);
 }
 
+static uint64_t fbclock_monotonic_ns(void) {
+  struct timespec ts = {0};
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  return ts.tv_sec * NANOSECONDS_IN_SECONDS + ts.tv_nsec;
+}
+
 // fbclock_section_store writes one section's data under its seqlock. A single
 // writer is assumed; concurrent readers detect a torn read via the counter.
 // Each section has its own seqlock on its own cache line, so writing one never
 // bumps the other's counter or disturbs the other reader's cache line.
+// write_ns, if not NULL, gets how long the section was mid-write.
 static void fbclock_section_store(
     fbclock_shmsection* _Nonnull section,
-    const fbclock_clockdata_v2* _Nonnull data) {
+    const fbclock_clockdata_v2* _Nonnull data,
+    uint64_t* write_ns) {
+  uint64_t start_ns = 0;
+  if (write_ns != NULL) {
+    // take the fresh mapping's page fault before the clock starts, not in it
+    (void)atomic_load(&section->seq);
+    start_ns = fbclock_monotonic_ns();
+  }
   uint64_t seq = fbclock_seq_write_begin(&section->seq);
   section->data = *data;
   fbclock_seq_write_end(&section->seq, seq);
+  if (write_ns != NULL) {
+    *write_ns = fbclock_monotonic_ns() - start_ns;
+  }
 }
 
-int fbclock_clockdata_store_data_v2(uint32_t fd, fbclock_clockdata_v2* data) {
+int fbclock_clockdata_store_data_v2(
+    uint32_t fd,
+    fbclock_clockdata_v2* data,
+    uint64_t* write_ns) {
   if (data == NULL) {
     return FBCLOCK_E_NO_DATA;
   }
@@ -216,7 +236,7 @@ int fbclock_clockdata_store_data_v2(uint32_t fd, fbclock_clockdata_v2* data) {
   if (shmp == MAP_FAILED || shmp == NULL) {
     return FBCLOCK_E_SHMEM_MAP_FAILED;
   }
-  fbclock_section_store(&shmp->primary, data);
+  fbclock_section_store(&shmp->primary, data, write_ns);
   munmap(shmp, FBCLOCK_SHMDATA_V2_SIZE);
   return FBCLOCK_E_NO_ERROR;
 }
@@ -236,7 +256,7 @@ int fbclock_clockdata_store_data_realtime(
   if (shmp == MAP_FAILED || shmp == NULL) {
     return FBCLOCK_E_SHMEM_MAP_FAILED;
   }
-  fbclock_section_store(&shmp->realtime, data);
+  fbclock_section_store(&shmp->realtime, data, NULL);
   munmap(shmp, FBCLOCK_SHMDATA_V2_SIZE);
   return FBCLOCK_E_NO_ERROR;
 }

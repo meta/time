@@ -40,6 +40,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 	"unsafe"
 
 	log "github.com/sirupsen/logrus"
@@ -270,11 +271,21 @@ func clockDataV2FromC(c *C.fbclock_clockdata_v2) *DataV2 {
 // fd param should be open file descriptor of that shared mem.
 func StoreFBClockDataV2(fd uintptr, d DataV2) error {
 	// fbclock_clockdata_store_data_v2 comes from fbclock.c
-	res := C.fbclock_clockdata_store_data_v2(C.uint(fd), clockDataV2ToC(d))
+	res := C.fbclock_clockdata_store_data_v2(C.uint(fd), clockDataV2ToC(d), nil)
 	if res != 0 {
 		return fmt.Errorf("failed to store data: %s", strerror(res))
 	}
 	return nil
+}
+
+// StoreFBClockDataV2Timed is StoreFBClockDataV2, also returning how long the section was mid-write.
+func StoreFBClockDataV2Timed(fd uintptr, d DataV2) (time.Duration, error) {
+	var writeNS C.uint64_t
+	res := C.fbclock_clockdata_store_data_v2(C.uint(fd), clockDataV2ToC(d), &writeNS)
+	if res != 0 {
+		return 0, fmt.Errorf("failed to store data: %s", strerror(res))
+	}
+	return time.Duration(writeNS), nil
 }
 
 // StoreFBClockDataRealtime stores the realtime anchor section, used on hosts

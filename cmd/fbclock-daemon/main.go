@@ -66,6 +66,7 @@ func main() {
 	flag.BoolVar(&cfg.EnableDataV2, "v2", true, "Enable data v2 in shared memory region (default: true)")
 	flag.BoolVar(&cfg.EnableDataV3, "v3", false, "Also write fbclock data v3 to /run/fbclock/data")
 	flag.BoolVar(&cfg.GradualWindow, "gradualwindow", false, "Publish a widened window from the first sample after a restart (default off)")
+	flag.BoolVar(&cfg.TimingStats, "timingstats", false, "Report timing stats, for now how long data v2 writes keep the primary section mid-write (default off)")
 	flag.StringVar(&cfgPath, "cfg", "", "Path to config")
 	flag.BoolVar(&manageDevice, "manage", true, fmt.Sprintf("Manage device. This will setup %q as a copy of PHC device associated with given network interface", daemon.ManagedPTPDevicePath))
 	flag.BoolVar(&csvLog, "csvlog", true, "Log all the metrics as CSV to log")

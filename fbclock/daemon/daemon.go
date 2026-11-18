@@ -844,6 +844,11 @@ func (s *Daemon) populateNTPDataV3(ctx context.Context, fetcher *ChronyFetcher, 
 func (s *Daemon) populateDataV2(shmv2 *fbclock.Shm) {
 	prevPrimary := fbclock.DataV2{}
 	prevRealtime := fbclock.DataV2{}
+	if s.cfg.TimingStats {
+		for _, b := range writeTimeBuckets {
+			s.stats.SetCounter(b.key, 0)
+		}
+	}
 
 	fastTicker := time.NewTicker(anchorInterval)
 	defer fastTicker.Stop()
@@ -876,7 +881,7 @@ func (s *Daemon) populateDataV2(shmv2 *fbclock.Shm) {
 		prevPrimary = primary
 		// Publish the primary section right away, before the slower REALTIME
 		// read below, so its anchor isn't aged by that read.
-		if err := fbclock.StoreFBClockDataV2(shmv2.File.Fd(), primary); err != nil {
+		if err := s.storePrimary(shmv2.File.Fd(), primary); err != nil {
 			log.Errorf("writing dataV2 to shm: %v", err)
 		}
 
@@ -907,6 +912,36 @@ func (s *Daemon) populateDataV2(shmv2 *fbclock.Shm) {
 					log.Errorf("writing realtime dataV2 to shm: %v", err)
 				}
 			}
+		}
+	}
+}
+
+// A reader that finds the section mid-write for longer than it retries gets -8,
+// so -timingstats counts the writes that long, a decade apart.
+var writeTimeBuckets = [...]struct {
+	key string
+	min time.Duration
+}{
+	{"v2_write_ge_1us", time.Microsecond},
+	{"v2_write_ge_10us", 10 * time.Microsecond},
+	{"v2_write_ge_100us", 100 * time.Microsecond},
+	{"v2_write_ge_1000us", time.Millisecond},
+}
+
+// storePrimary writes the data v2 primary section, timing it under -timingstats.
+func (s *Daemon) storePrimary(fd uintptr, d fbclock.DataV2) error {
+	if !s.cfg.TimingStats {
+		return fbclock.StoreFBClockDataV2(fd, d)
+	}
+	took, err := fbclock.StoreFBClockDataV2Timed(fd, d)
+	s.countWrite(took)
+	return err
+}
+
+func (s *Daemon) countWrite(took time.Duration) {
+	for _, b := range writeTimeBuckets {
+		if took >= b.min {
+			s.stats.UpdateCounterBy(b.key, 1)
 		}
 	}
 }

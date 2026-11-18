@@ -986,12 +986,14 @@ func TestPopulateDataV2(t *testing.T) {
 	testCases := []struct {
 		name         string
 		clockID      uint32
+		timingStats  bool
 		wantPrimary  fbclock.DataV2
 		wantRealtime *fbclock.DataV2 // nil: never written
 	}{
 		{
 			name:        "MONOTONIC_RAW primary",
 			clockID:     unix.CLOCK_MONOTONIC_RAW,
+			timingStats: true,
 			wantPrimary: primary,
 			wantRealtime: &fbclock.DataV2{
 				IngressTimeNS:        1755000036500000000,
@@ -1014,7 +1016,8 @@ func TestPopulateDataV2(t *testing.T) {
 	}
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			s := newTestDaemon(&Config{RingSize: 30, Interval: time.Second}, stats.NewStats())
+			st := stats.NewStats()
+			s := newTestDaemon(&Config{RingSize: 30, Interval: time.Second, TimingStats: tc.timingStats}, st)
 			s.state.setLastStoredData(stored)
 			// populateDataV2 never returns, so the reads of its fourth tick end its goroutine
 			const ticks = 3
@@ -1050,6 +1053,12 @@ func TestPopulateDataV2(t *testing.T) {
 			got, err := fbclock.ReadFBClockDataV2(shmp)
 			require.NoError(t, err)
 			require.Equal(t, tc.wantPrimary, *got)
+			// Without -timingstats the daemon reports no write keys at all.
+			counters := st.Get()
+			for _, b := range writeTimeBuckets {
+				_, reported := counters[b.key]
+				require.Equal(t, tc.timingStats, reported, b.key)
+			}
 			got, err = fbclock.ReadFBClockDataRealtime(shmp)
 			if tc.wantRealtime == nil {
 				require.ErrorContains(t, err, "no data from daemon")
@@ -1060,6 +1069,21 @@ func TestPopulateDataV2(t *testing.T) {
 			require.Equal(t, *tc.wantRealtime, *got)
 		})
 	}
+}
+
+// The counts only go up, like phc_read_error; a write at a bucket's edge is in it.
+func TestCountWrite(t *testing.T) {
+	st := stats.NewStats()
+	s := newTestDaemon(&Config{RingSize: 1, Interval: time.Second, TimingStats: true}, st)
+	for _, took := range []time.Duration{300 * time.Nanosecond, time.Microsecond, 12 * time.Microsecond, 2 * time.Millisecond} {
+		s.countWrite(took)
+	}
+	require.Equal(t, map[string]int64{
+		"v2_write_ge_1us":    3,
+		"v2_write_ge_10us":   2,
+		"v2_write_ge_100us":  1,
+		"v2_write_ge_1000us": 1,
+	}, st.Get())
 }
 
 // v3Clock is how a stored record reads back.

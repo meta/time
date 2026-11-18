@@ -162,7 +162,7 @@ int writer_thread_v2(int sfd_rw, int tries) {
       .sysclock_time_ns = 1748164309441310791,
   };
   for (int i = 0; i < tries; i++) {
-    err = fbclock_clockdata_store_data_v2(sfd_rw, &data);
+    err = fbclock_clockdata_store_data_v2(sfd_rw, &data, nullptr);
     if (err != 0) {
       return err;
     }
@@ -399,7 +399,7 @@ TEST(fbclockTest, test_init_ntp_source_reads_the_chrony_record) {
       .sysclock_time_ns = realtime_ns,
       .coef_ppb = 0,
   };
-  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data), 0);
+  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data, nullptr), 0);
 
   fbclock_lib lib = {};
   const fbclock_options options = {.sources = FBCLOCK_SOURCE_NTP};
@@ -1087,7 +1087,7 @@ TEST(fbclockTest, test_gettime_max_wou_rejects_the_stalled_window) {
       .sysclock_time_ns = sysclock_now_ns,
       .coef_ppb = 0,
   };
-  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data), 0);
+  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data, nullptr), 0);
 
   const uint64_t cap_ns = 500; // between the fresh and the stalled window
   fbclock_lib lib = {};
@@ -1103,7 +1103,7 @@ TEST(fbclockTest, test_gettime_max_wou_rejects_the_stalled_window) {
 
   // The same snapshot, five seconds without a daemon update.
   data.sysclock_time_ns = sysclock_now_ns - 5000000000LL;
-  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data), 0);
+  ASSERT_EQ(fbclock_clockdata_store_data_v2(sfd_rw, &data, nullptr), 0);
 
   fbclock_truetime stalled;
   EXPECT_EQ(fbclock_gettime(&lib, &stalled), FBCLOCK_E_WOU_TOO_BIG);
