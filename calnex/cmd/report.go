@@ -35,7 +35,7 @@ func init() {
 }
 
 func report() error {
-	api, err := api.NewAPI(target, insecureTLS, time.Minute)
+	api, err := api.NewAPI(target, insecureTLS, 2*time.Minute)
 	if err != nil {
 		return err
 	}
