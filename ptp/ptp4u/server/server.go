@@ -54,6 +54,11 @@ const subscriptionDuration = time.Minute * 5
 
 // Start the workers send bind to event and general UDP ports
 func (s *Server) Start() error {
+	if s.Config.AttemptsTXTS < 1 {
+		return fmt.Errorf("TX timestamp attempts must be positive, got %d", s.Config.AttemptsTXTS)
+	}
+	timestamp.AttemptsTXTS = s.Config.AttemptsTXTS
+
 	if err := s.Config.CreatePidFile(); err != nil {
 		return err
 	}

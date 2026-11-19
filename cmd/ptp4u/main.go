@@ -51,6 +51,7 @@ func main() {
 	flag.IntVar(&c.MonitoringPort, "monitoringport", 8888, "Port to run monitoring server on")
 	flag.IntVar(&c.QueueSize, "queue", 0, "Size of the queue to send out packets")
 	flag.IntVar(&c.RecvWorkers, "recvworkers", 10, "Set the number of receive workers")
+	flag.IntVar(&c.AttemptsTXTS, "txtsattempts", 50, "Max attempts to read a TX timestamp, 1ms apart")
 	flag.IntVar(&c.SendWorkers, "workers", 100, "Set the number of send workers")
 	flag.UintVar(&c.DomainNumber, "domainnumber", 0, "Set the PTP domain by its number. Valid values are [0-255]")
 	flag.StringVar(&c.ConfigFile, "config", "", "Path to a config with dynamic settings")

@@ -21,6 +21,7 @@ import (
 	"encoding/binary"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -225,6 +226,21 @@ func TestStartEventListener(t *testing.T) {
 	}
 	go s.startEventListener()
 	time.Sleep(100 * time.Millisecond)
+}
+
+func TestStartAttemptsTXTS(t *testing.T) {
+	orig := timestamp.AttemptsTXTS
+	defer func() { timestamp.AttemptsTXTS = orig }()
+
+	s := Server{Config: &Config{}}
+	require.ErrorContains(t, s.Start(), "TX timestamp attempts must be positive")
+	require.Equal(t, orig, timestamp.AttemptsTXTS)
+
+	s.Config.AttemptsTXTS = 50
+	s.Config.PidFile = filepath.Join(t.TempDir(), "ptp4u.pid")
+	s.Config.Interface = "nonexistent0"
+	require.ErrorContains(t, s.Start(), "unable to get mac address")
+	require.Equal(t, 50, timestamp.AttemptsTXTS)
 }
 
 func TestStartGeneralListener(t *testing.T) {

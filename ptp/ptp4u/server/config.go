@@ -44,6 +44,7 @@ var dcMux = sync.Mutex{}
 
 // StaticConfig is a set of static options which require a server restart
 type StaticConfig struct {
+	AttemptsTXTS    int
 	ConfigFile      string
 	DebugAddr       string
 	DomainNumber    uint
