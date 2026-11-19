@@ -75,6 +75,19 @@ func TestFindWorker(t *testing.T) {
 	require.Equal(t, 6, s.findWorker(clipi3, 0).id)
 }
 
+func TestFindWorkerOffsetRotates(t *testing.T) {
+	c := &Config{StaticConfig: StaticConfig{TimestampType: timestamp.SW, SendWorkers: 10}}
+	s := Server{Config: c, Stats: stats.NewJSONStats(1), sw: make([]*sendWorker, c.SendWorkers)}
+	for i := range c.SendWorkers {
+		s.sw[i] = newSendWorker(i, c, s.Stats)
+	}
+	clientID := ptp.PortIdentity{PortNumber: 1, ClockIdentity: ptp.ClockIdentity(1234)}
+	home := s.findWorker(clientID, 0).id
+	for offset := range c.SendWorkers + 1 {
+		require.Equal(t, (home+offset)%c.SendWorkers, s.findWorker(clientID, uint64(offset)).id)
+	}
+}
+
 func TestDelayReqPortMoveReplacesSubscription(t *testing.T) {
 	s, serverAddr := eventServer(t)
 	clientFD := loopbackSocket(t)

@@ -485,11 +485,11 @@ func (s *Server) handleGeneralMessages(gFd int) {
 }
 
 func (s *Server) findWorker(clientID ptp.PortIdentity, offset uint64) *sendWorker {
-	val := uint64(clientID.ClockIdentity) + uint64(clientID.PortNumber) + offset
+	val := uint64(clientID.ClockIdentity) + uint64(clientID.PortNumber)
 	hashableBytes := make([]byte, 8)
 	binary.LittleEndian.PutUint64(hashableBytes, val)
-	hash := xxhash.Sum64(hashableBytes)
-	return s.sw[hash%uint64(s.Config.SendWorkers)] //#nosec G115
+	n := uint64(len(s.sw))
+	return s.sw[(xxhash.Sum64(hashableBytes)%n+offset)%n]
 }
 
 // Drain traffic
