@@ -16,30 +16,38 @@ limitations under the License.
 
 package rtcm
 
-import "encoding/binary"
+import (
+	"bytes"
+	"encoding/binary"
+)
 
-// EphCollector assembles GPS broadcast ephemeris from UBX-RXM-SFRBX navigation
-// subframes and emits RTCM 1019 (GPS ephemeris) messages. Casters need
-// ephemeris to position the satellites referenced by the MSM observations;
-// without it they report "lack usable measurements".
+// EphCollector assembles broadcast ephemerides from UBX-RXM-SFRBX navigation data and
+// emits them as RTCM, so the caster can position the satellites of the MSM observations.
 type EphCollector struct {
 	subfrm   map[uint8]*[3][30]byte // PRN -> packed subframes 1,2,3 (24-bit words)
 	have     map[uint8][3]bool
-	latest   map[uint8][]byte // PRN -> latest encoded RTCM 1019 frame
 	lastIODE map[uint8]uint32 // PRN -> IODE of the last emitted ephemeris
+	gal      map[uint8]*galInav
+	latest   map[satID][]byte
 }
 
-// NewEphCollector creates an empty GPS ephemeris collector.
+// satID identifies a satellite across constellations.
+type satID struct {
+	gnss, sv uint8
+}
+
+// NewEphCollector creates an empty ephemeris collector.
 func NewEphCollector() *EphCollector {
 	return &EphCollector{
 		subfrm:   map[uint8]*[3][30]byte{},
 		have:     map[uint8][3]bool{},
-		latest:   map[uint8][]byte{},
 		lastIODE: map[uint8]uint32{},
+		gal:      map[uint8]*galInav{},
+		latest:   map[satID][]byte{},
 	}
 }
 
-// All returns the latest cached RTCM 1019 frame for every satellite with a
+// All returns the latest cached ephemeris frame for every satellite with a
 // complete ephemeris, for sending on (re)connect and periodically.
 func (c *EphCollector) All() [][]byte {
 	out := make([][]byte, 0, len(c.latest))
@@ -49,33 +57,49 @@ func (c *EphCollector) All() [][]byte {
 	return out
 }
 
-// AddSFRBX consumes a UBX-RXM-SFRBX payload (the UBX message payload, without
-// the UBX header/checksum). When a payload completes GPS LNAV subframes 1-3 for
-// a satellite with a consistent IODE/IODC, it returns the encoded RTCM 1019
-// frame. Otherwise it returns nil.
+// AddSFRBX consumes a UBX-RXM-SFRBX payload (without the UBX header/checksum) and returns
+// the RTCM ephemeris frame it completes, or nil if it completes none or nothing changed.
 func (c *EphCollector) AddSFRBX(payload []byte) []byte {
 	if len(payload) < 8 {
 		return nil
 	}
-	gnssID := payload[0]
-	svID := payload[1]
-	numWords := int(payload[4])
-
-	if gnssID != GnssGPS { // GPS LNAV only for now
+	gnssID, svID, numWords := payload[0], payload[1], int(payload[4])
+	if len(payload) < 8+numWords*4 {
 		return nil
 	}
-	if numWords < 10 || len(payload) < 8+numWords*4 {
+	words := payload[8 : 8+numWords*4]
+	switch gnssID {
+	case GnssGPS:
+		return c.addGPS(svID, words)
+	case GnssGalileo:
+		return c.emit(satID{GnssGalileo, svID}, c.addGalileo(svID, words))
+	}
+	return nil
+}
+
+// emit caches and returns frame unless it is nil or already the satellite's cached frame.
+func (c *EphCollector) emit(sat satID, frame []byte) []byte {
+	if frame == nil || bytes.Equal(frame, c.latest[sat]) {
+		return nil
+	}
+	c.latest[sat] = frame
+	return frame
+}
+
+// addGPS returns RTCM 1019 when LNAV subframes 1-3 complete an ephemeris with a new IODE.
+func (c *EphCollector) addGPS(svID uint8, payload []byte) []byte {
+	if len(payload) < 10*4 {
 		return nil
 	}
 	// L2C CNAV messages start with their 0x8B preamble in the top byte; LNAV words are right-aligned.
-	if binary.LittleEndian.Uint32(payload[8:12])>>24 == 0x8B {
+	if binary.LittleEndian.Uint32(payload[0:4])>>24 == 0x8B {
 		return nil
 	}
 
 	// Each 32-bit dword carries a 30-bit nav word; the top 24 bits are data.
 	var words [10]uint32
 	for i := range 10 {
-		dw := binary.LittleEndian.Uint32(payload[8+i*4 : 12+i*4])
+		dw := binary.LittleEndian.Uint32(payload[i*4 : i*4+4])
 		words[i] = (dw >> 6) & 0xFFFFFF
 	}
 	id := (words[1] >> 2) & 7 // subframe ID from the HOW word
@@ -112,7 +136,7 @@ func (c *EphCollector) AddSFRBX(payload []byte) []byte {
 		if frame == nil {
 			return nil
 		}
-		c.latest[svID] = frame
+		c.latest[satID{GnssGPS, svID}] = frame
 		c.lastIODE[svID] = iode
 		return frame
 	}
@@ -136,6 +160,19 @@ func getbits(buf []byte, pos, n int) int32 {
 	}
 	//nolint:gosec // intentional two's-complement reinterpret of an n-bit field
 	return int32(v)
+}
+
+// part is a run of bits in a navigation data buffer; a field can span several.
+type part struct{ pos, n int }
+
+// writeParts appends the bit runs of a field to w, in order.
+func writeParts(w *BitWriter, buf []byte, parts ...part) {
+	for _, p := range parts {
+		for done := 0; done < p.n; done += 32 {
+			n := min(32, p.n-done)
+			w.WriteBits(getbitu(buf, p.pos+done, n), n)
+		}
+	}
 }
 
 // encode1019 builds an RTCM 1019 GPS ephemeris frame directly from the raw

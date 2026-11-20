@@ -448,15 +448,15 @@ func streamFrames(
 			if scanner.UBXClass() != rtcm.UBXClassRXM {
 				continue
 			}
-			// UBX-RXM-SFRBX: decode navigation subframes into RTCM 1019
-			// (GPS ephemeris) so the caster can position the satellites.
+			// UBX-RXM-SFRBX: decode navigation data into RTCM ephemerides
+			// so the caster can position the satellites.
 			if scanner.UBXMsgID() == rtcm.UBXMsgSFRBX {
 				if eph := ephColl.AddSFRBX(scanner.UBXPayload()); eph != nil {
 					if _, err := client.Write(eph); err != nil {
 						return casterWrite("ephemeris", err)
 					}
 					frameCount++
-					logger.Info("sent GPS ephemeris (1019)", "bytes", len(eph))
+					logger.Info("sent ephemeris", "type", rtcm.MessageTypeFromPayload(eph[rtcm.HeaderSize:]), "bytes", len(eph))
 				}
 				continue
 			}
