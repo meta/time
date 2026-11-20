@@ -67,6 +67,10 @@ func (c *EphCollector) AddSFRBX(payload []byte) []byte {
 	if numWords < 10 || len(payload) < 8+numWords*4 {
 		return nil
 	}
+	// L2C CNAV messages start with their 0x8B preamble in the top byte; LNAV words are right-aligned.
+	if binary.LittleEndian.Uint32(payload[8:12])>>24 == 0x8B {
+		return nil
+	}
 
 	// Each 32-bit dword carries a 30-bit nav word; the top 24 bits are data.
 	var words [10]uint32

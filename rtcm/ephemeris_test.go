@@ -208,6 +208,18 @@ func TestEphCollectorIODEMismatchDropped(t *testing.T) {
 	require.Empty(t, c.All())
 }
 
+// An L2C CNAV message whose words happen to parse as LNAV subframes 1-3 must not become a 1019.
+func TestEphCollectorIgnoresL2CNAV(t *testing.T) {
+	c := NewEphCollector()
+	s1, s2, s3 := buildEph(0x42, nil)
+	for _, s := range [][]byte{s1, s2, s3} {
+		p := sfrbx(GnssGPS, 5, s)
+		p[11] = 0x8B // CNAV preamble in the top byte of the first word
+		require.Nil(t, c.AddSFRBX(p))
+	}
+	require.Empty(t, c.All())
+}
+
 func TestEphCollectorNonGPSIgnored(t *testing.T) {
 	c := NewEphCollector()
 	require.Nil(t, c.AddSFRBX(sfrbx(GnssGalileo, 1, gpsSubframe(3))))
