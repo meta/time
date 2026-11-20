@@ -17,9 +17,14 @@ limitations under the License.
 package relay
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -317,4 +322,251 @@ func TestPeriodicSenderEphemerisWriteError(t *testing.T) {
 	require.Error(t, err)
 	require.True(t, isWriteError(err), "ephemeris write failure must be a caster write error")
 	require.Equal(t, uint64(1), sent, "frames written before the failure are counted")
+}
+
+// ubxFrame wraps a UBX-RXM payload in a frame with its Fletcher-8 checksum.
+func ubxFrame(id byte, p []byte) []byte {
+	f := []byte{rtcm.UBXSync1, rtcm.UBXSync2, rtcm.UBXClassRXM, id, byte(len(p) & 0xFF), byte(len(p) >> 8 & 0xFF)}
+	f = append(f, p...)
+	var ckA, ckB byte
+	for _, c := range f[2:] {
+		ckA += c
+		ckB += ckA
+	}
+	return append(f, ckA, ckB)
+}
+
+// rawxFrame is a UBX-RXM-RAWX frame at GPS time of week tow with one GPS L1 measurement.
+func rawxFrame(tow float64) []byte {
+	return rawxFrameAtWeek(tow, 2400)
+}
+
+func rawxFrameAtWeek(tow float64, week uint16) []byte {
+	p := make([]byte, 16+32)
+	binary.LittleEndian.PutUint64(p[0:8], math.Float64bits(tow))
+	binary.LittleEndian.PutUint16(p[8:10], week)
+	p[10], p[11] = 18, 1
+	m := p[16:]
+	binary.LittleEndian.PutUint64(m[0:8], math.Float64bits(2.2e7))
+	binary.LittleEndian.PutUint64(m[8:16], math.Float64bits(1.156e8))
+	binary.LittleEndian.PutUint32(m[16:20], math.Float32bits(-1234.5))
+	m[20], m[21] = rtcm.GnssGPS, 7
+	binary.LittleEndian.PutUint16(m[24:26], 64500)
+	m[26], m[30] = 44, 0x03
+	return ubxFrame(rtcm.UBXMsgRAWX, p)
+}
+
+func descriptor(t *testing.T, antenna string) []byte {
+	frame, err := rtcm.Encode1033(rtcm.AntennaDescriptor{StationID: 1, AntennaType: antenna})
+	require.NoError(t, err)
+	return frame
+}
+
+// serveSocket serves stream to the first client of a Unix socket, which is gone after that.
+func serveSocket(t *testing.T, stream ...[]byte) string {
+	path := filepath.Join(t.TempDir(), "rtcm.sock")
+	ln, err := net.Listen("unix", path)
+	require.NoError(t, err)
+	go func() {
+		conn, err := ln.Accept()
+		ln.Close()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		for _, b := range stream {
+			if _, err := conn.Write(b); err != nil {
+				return
+			}
+		}
+	}()
+	return path
+}
+
+// msmEpoch reads the MSM epoch time (DF004, payload bits 24-53).
+func msmEpoch(frame []byte) uint32 {
+	r := rtcm.NewBitReader(frame[rtcm.HeaderSize:])
+	r.Skip(24)
+	return r.ReadBits(30)
+}
+
+func TestStreamFramesSendsOneEpochPerInterval(t *testing.T) {
+	tests := map[string]struct {
+		interval time.Duration
+		sent     []uint32
+	}{
+		"default zero sends every epoch": {0, []uint32{0, 1, 2, 3, 4}},
+		"one second at 1 Hz":             {time.Second, []uint32{0, 1, 2, 3, 4}},
+		"two seconds":                    {2 * time.Second, []uint32{0, 2, 4}},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			stream := make([][]byte, 0, 10)
+			for i := range 5 {
+				stream = append(stream, rawxFrame(61218+float64(i)), descriptor(t, fmt.Sprintf("epoch%d", i)))
+			}
+			conn, err := net.Dial("unix", serveSocket(t, stream...))
+			require.NoError(t, err)
+			defer conn.Close()
+			caster := &recordingWriter{}
+
+			err = streamFrames(t.Context(), conn, caster, slog.New(slog.DiscardHandler), stats.NewJSONStats(),
+				1, descriptor(t, "ADVNULLANTENNA"), rtcm.NewEphCollector(), time.Hour, newEpochGate(tt.interval))
+
+			require.ErrorContains(t, err, "EOF")
+			wantEpochs, epochs := make([]uint32, 0, len(tt.sent)), make([]uint32, 0, len(tt.sent))
+			wantNative, native := make([][]byte, 0, len(tt.sent)), make([][]byte, 0, len(tt.sent))
+			for _, i := range tt.sent {
+				wantEpochs = append(wantEpochs, (61218+i)*1000)
+				wantNative = append(wantNative, descriptor(t, fmt.Sprintf("epoch%d", i)))
+			}
+			for _, w := range caster.writes[1:] {
+				f, err := rtcm.ParseFrame(w)
+				require.NoError(t, err)
+				if f.MessageType == rtcm.TypeGPSMSM7 {
+					epochs = append(epochs, msmEpoch(w))
+				} else {
+					native = append(native, w)
+				}
+			}
+			require.Equal(t, wantEpochs, epochs)
+			require.Equal(t, wantNative, native, "the receiver's own frames follow their epoch")
+		})
+	}
+}
+
+func TestStreamFramesKeepsEpochGateAcrossSocketReconnects(t *testing.T) {
+	caster := &recordingWriter{}
+	epochsGate := newEpochGate(time.Minute)
+	streams := [][][]byte{
+		{rawxFrame(61200), descriptor(t, "first"), rawxFrame(61201), descriptor(t, "skipped")},
+		{descriptor(t, "skipped after reconnect"), rawxFrame(61205), descriptor(t, "skipped again"),
+			rawxFrame(61260), descriptor(t, "next interval")},
+	}
+	msg1033 := descriptor(t, "ADVNULLANTENNA")
+	for _, stream := range streams {
+		conn, err := net.Dial("unix", serveSocket(t, stream...))
+		require.NoError(t, err)
+		err = streamFrames(t.Context(), conn, caster, slog.New(slog.DiscardHandler), stats.NewJSONStats(),
+			1, msg1033, rtcm.NewEphCollector(), time.Hour, epochsGate)
+		conn.Close()
+		require.ErrorContains(t, err, "EOF")
+	}
+
+	var epochs []uint32
+	var native [][]byte
+	for _, w := range caster.writes {
+		f, err := rtcm.ParseFrame(w)
+		require.NoError(t, err)
+		if f.MessageType == rtcm.TypeGPSMSM7 {
+			epochs = append(epochs, msmEpoch(w))
+		} else if !bytes.Equal(w, msg1033) {
+			native = append(native, w)
+		}
+	}
+	require.Equal(t, []uint32{61200000, 61260000}, epochs)
+	require.Equal(t, [][]byte{descriptor(t, "first"), descriptor(t, "next interval")}, native)
+}
+
+func TestStreamFramesForwardsSparseReceiverFrames(t *testing.T) {
+	// Receiver frames only after epochs 1 and 5, neither of which is sent at a 2 s interval.
+	stream := [][]byte{
+		rawxFrame(61218), rawxFrame(61219), descriptor(t, "after 1"),
+		rawxFrame(61220), rawxFrame(61221), rawxFrame(61222), rawxFrame(61223), descriptor(t, "after 5"),
+	}
+	conn, err := net.Dial("unix", serveSocket(t, stream...))
+	require.NoError(t, err)
+	defer conn.Close()
+	caster := &recordingWriter{}
+	msg1033 := descriptor(t, "ADVNULLANTENNA")
+
+	err = streamFrames(t.Context(), conn, caster, slog.New(slog.DiscardHandler), stats.NewJSONStats(),
+		1, msg1033, rtcm.NewEphCollector(), time.Hour, newEpochGate(2*time.Second))
+
+	require.ErrorContains(t, err, "EOF")
+	native := make([][]byte, 0, 2)
+	for _, w := range caster.writes {
+		f, err := rtcm.ParseFrame(w)
+		require.NoError(t, err)
+		if f.MessageType != rtcm.TypeGPSMSM7 && !bytes.Equal(w, msg1033) {
+			native = append(native, w)
+		}
+	}
+	require.Equal(t, [][]byte{descriptor(t, "after 1"), descriptor(t, "after 5")}, native,
+		"each receiver frame type goes out once per interval, not only after a sent epoch")
+}
+
+func TestStreamFramesSamplesAcrossWeekRollover(t *testing.T) {
+	conn, err := net.Dial("unix", serveSocket(t,
+		rawxFrameAtWeek(604740, 2400), rawxFrameAtWeek(604799.9999999, 2400), rawxFrameAtWeek(1, 2401)))
+	require.NoError(t, err)
+	defer conn.Close()
+	caster := &recordingWriter{}
+	err = streamFrames(t.Context(), conn, caster, slog.New(slog.DiscardHandler), stats.NewJSONStats(),
+		1, descriptor(t, "ADVNULLANTENNA"), rtcm.NewEphCollector(), time.Hour, newEpochGate(time.Minute))
+	require.ErrorContains(t, err, "EOF")
+	var epochs []uint32
+	for _, w := range caster.writes {
+		f, err := rtcm.ParseFrame(w)
+		require.NoError(t, err)
+		if f.MessageType == rtcm.TypeGPSMSM7 {
+			epochs = append(epochs, msmEpoch(w))
+		}
+	}
+	require.Equal(t, []uint32{604740000, 0}, epochs)
+}
+
+// gpsEphemeris returns the UBX-RXM-SFRBX frames of GPS LNAV subframes 1-3 for sv, IODE 0x42.
+func gpsEphemeris(sv uint8) [][]byte {
+	frames := make([][]byte, 0, 3)
+	for id := range uint32(3) {
+		sf := make([]byte, 30)
+		setBits(sf, 24, 24, (id+1)<<2)
+		switch id {
+		case 0:
+			setBits(sf, 70, 2, 1)
+			setBits(sf, 168, 8, 0x42)
+		case 1:
+			setBits(sf, 48, 8, 0x42)
+		case 2:
+			setBits(sf, 216, 8, 0x42)
+		}
+		p := make([]byte, 8+40)
+		p[0], p[1], p[4] = rtcm.GnssGPS, sv, 10
+		for w := range 10 {
+			word := uint32(sf[3*w])<<16 | uint32(sf[3*w+1])<<8 | uint32(sf[3*w+2])
+			binary.LittleEndian.PutUint32(p[8+4*w:], word<<6)
+		}
+		frames = append(frames, ubxFrame(rtcm.UBXMsgSFRBX, p))
+	}
+	return frames
+}
+
+func setBits(buf []byte, pos, n int, v uint32) {
+	for i := range n {
+		if v>>(n-1-i)&1 == 1 {
+			buf[(pos+i)/8] |= 1 << (7 - (pos+i)%8)
+		}
+	}
+}
+
+func TestStreamFramesKeepsPeriodicSendsOnSkippedEpochs(t *testing.T) {
+	stream := append(gpsEphemeris(7), rawxFrame(61218), rawxFrame(61219), rawxFrame(61220))
+	conn, err := net.Dial("unix", serveSocket(t, stream...))
+	require.NoError(t, err)
+	defer conn.Close()
+	caster := &recordingWriter{}
+
+	err = streamFrames(t.Context(), conn, caster, slog.New(slog.DiscardHandler), stats.NewJSONStats(),
+		1, descriptor(t, "ADVNULLANTENNA"), rtcm.NewEphCollector(), time.Nanosecond, newEpochGate(time.Hour))
+
+	require.ErrorContains(t, err, "EOF")
+	types := make([]uint16, 0, len(caster.writes))
+	for _, w := range caster.writes {
+		f, err := rtcm.ParseFrame(w)
+		require.NoError(t, err)
+		types = append(types, f.MessageType)
+	}
+	require.Equal(t, []uint16{1033, 1019, 1019, rtcm.TypeGPSMSM7, 1019, 1019}, types,
+		"the cached 1019 is re-sent before every scanned frame, sent epoch or not")
 }

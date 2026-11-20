@@ -62,6 +62,7 @@ type Config struct {
 	parse             string
 	reconnectInterval time.Duration
 	ephInterval       time.Duration
+	epochInterval     time.Duration
 	monitoringPort    int
 	ntripVersion      int
 	minCNO            uint
@@ -108,6 +109,8 @@ func (c *Config) RegisterFlags(fs *flag.FlagSet) {
 		"NTRIP v2 only: send body using HTTP chunked transfer encoding")
 	fs.DurationVar(&c.ephInterval, "ephemeris-interval", 8*time.Second,
 		"how often to re-send cached ephemeris (1019) to the caster")
+	fs.DurationVar(&c.epochInterval, "epoch-interval", 0,
+		"send one observation epoch (MSM7 and the receiver's own RTCM) per interval; 0 sends every epoch")
 	fs.UintVar(&c.minCNO, "min-cno", 28,
 		"drop observations below this carrier-to-noise density in dB-Hz (0 disables)")
 	fs.BoolVar(&c.rawxStats, "rawx-stats", false,
@@ -233,13 +236,46 @@ func setupLogger(level string) *slog.Logger {
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl}))
 }
 
+// epochGate picks one RAWX epoch per interval of receiver time, across socket and caster reconnects.
+type epochGate struct {
+	native    map[uint16]int64 // message type -> interval of its last forwarded receiver frame
+	interval  time.Duration
+	lastSlot  int64
+	sendEpoch bool
+}
+
+func newEpochGate(interval time.Duration) *epochGate {
+	return &epochGate{native: map[uint16]int64{}, interval: interval, lastSlot: -1, sendEpoch: true}
+}
+
+// forwardNative reports whether a receiver frame of msgType goes out: each type once per interval.
+func (g *epochGate) forwardNative(msgType uint16) bool {
+	if g.interval.Milliseconds() <= 0 {
+		return true
+	}
+	if slot, ok := g.native[msgType]; ok && slot == g.lastSlot {
+		return false
+	}
+	g.native[msgType] = g.lastSlot
+	return true
+}
+
+func (g *epochGate) observe(week uint16, rcvTow float64) {
+	if ms := g.interval.Milliseconds(); ms > 0 {
+		slot := (int64(week)*604800000 + int64(math.Round(rcvTow*1000))) / ms
+		g.sendEpoch = slot != g.lastSlot
+		g.lastSlot = slot
+	}
+}
+
 func run(ctx context.Context, cfg Config, logger *slog.Logger, st *stats.JSONStats) {
 	// The ephemeris collector persists across caster reconnects so it keeps
 	// accumulating navigation subframes; a full GPS ephemeris takes ~30s to
 	// assemble, longer than a single caster connection often lasts.
 	ephColl := rtcm.NewEphCollector()
+	epochs := newEpochGate(cfg.epochInterval)
 	for ctx.Err() == nil {
-		err := runOnce(ctx, cfg, logger, st, ephColl)
+		err := runOnce(ctx, cfg, logger, st, ephColl, epochs)
 		if err == nil || ctx.Err() != nil {
 			return
 		}
@@ -257,7 +293,14 @@ func run(ctx context.Context, cfg Config, logger *slog.Logger, st *stats.JSONSta
 	}
 }
 
-func runOnce(ctx context.Context, cfg Config, logger *slog.Logger, st *stats.JSONStats, ephColl *rtcm.EphCollector) error {
+func runOnce(
+	ctx context.Context,
+	cfg Config,
+	logger *slog.Logger,
+	st *stats.JSONStats,
+	ephColl *rtcm.EphCollector,
+	epochs *epochGate,
+) error {
 	if cfg.dryRun {
 		sockConn, err := connectSocket(ctx, cfg, logger)
 		if err != nil {
@@ -305,7 +348,7 @@ func runOnce(ctx context.Context, cfg Config, logger *slog.Logger, st *stats.JSO
 			return fmt.Errorf("socket: %w", err)
 		}
 
-		err = streamFrames(ctx, sockConn, client, logger, st, stationID, msg1033, ephColl, cfg.ephInterval)
+		err = streamFrames(ctx, sockConn, client, logger, st, stationID, msg1033, ephColl, cfg.ephInterval, epochs)
 		sockConn.Close()
 
 		if ctx.Err() != nil {
@@ -406,13 +449,14 @@ func connectCaster(ctx context.Context, cfg Config, logger *slog.Logger) (*ntrip
 func streamFrames(
 	ctx context.Context,
 	sockConn net.Conn,
-	client *ntrip.Client,
+	client io.Writer,
 	logger *slog.Logger,
 	st *stats.JSONStats,
 	stationID uint16,
 	msg1033 []byte,
 	ephColl *rtcm.EphCollector,
 	ephInterval time.Duration,
+	epochs *epochGate,
 ) error {
 	scanner := rtcm.NewMixedScanner(sockConn)
 	var frameCount uint64
@@ -440,6 +484,12 @@ func streamFrames(
 
 	for scanner.Scan() {
 		if err := ctx.Err(); err != nil {
+			return err
+		}
+		// Before the switch, so frames that are not sent still drive the periodic cadences.
+		sent, err := periodic.send(client, msg1033, ephColl)
+		frameCount += sent
+		if err != nil {
 			return err
 		}
 
@@ -492,6 +542,11 @@ func streamFrames(
 					"receiver_flagged_phases", rtcm.ReceiverFlaggedPhases(),
 					"age_s", time.Now().Unix()-(int64(315964800)+int64(epoch.Week)*604800-int64(epoch.LeapS)+int64(gpsTowMs/1000)),
 				)
+			}
+
+			epochs.observe(epoch.Week, epoch.RcvTow)
+			if !epochs.sendEpoch {
+				continue
 			}
 
 			// Per-constellation MSM epoch time (30-bit DF004-style field):
@@ -568,6 +623,9 @@ func streamFrames(
 			if frame.MessageType >= 1071 && frame.MessageType <= 1137 {
 				continue
 			}
+			if !epochs.forwardNative(frame.MessageType) {
+				continue
+			}
 
 			// Forward 1005 (station position) and 1230 (GLONASS bias).
 			raw := frame.Raw
@@ -593,12 +651,6 @@ func streamFrames(
 				return casterWrite("RTCM", err)
 			}
 			frameCount++
-		}
-
-		sent, err := periodic.send(client, msg1033, ephColl)
-		frameCount += sent
-		if err != nil {
-			return err
 		}
 	}
 
