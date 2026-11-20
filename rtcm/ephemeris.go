@@ -28,6 +28,7 @@ type EphCollector struct {
 	have     map[uint8][3]bool
 	lastIODE map[uint8]uint32 // PRN -> IODE of the last emitted ephemeris
 	gal      map[uint8]*galInav
+	bds      map[uint8]*bdsNav
 	latest   map[satID][]byte
 }
 
@@ -43,6 +44,7 @@ func NewEphCollector() *EphCollector {
 		have:     map[uint8][3]bool{},
 		lastIODE: map[uint8]uint32{},
 		gal:      map[uint8]*galInav{},
+		bds:      map[uint8]*bdsNav{},
 		latest:   map[satID][]byte{},
 	}
 }
@@ -73,6 +75,8 @@ func (c *EphCollector) AddSFRBX(payload []byte) []byte {
 		return c.addGPS(svID, words)
 	case GnssGalileo:
 		return c.emit(satID{GnssGalileo, svID}, c.addGalileo(svID, words))
+	case GnssBeiDou:
+		return c.emit(satID{GnssBeiDou, svID}, c.addBeiDou(svID, payload[2], words))
 	}
 	return nil
 }
@@ -173,6 +177,15 @@ func writeParts(w *BitWriter, buf []byte, parts ...part) {
 			w.WriteBits(getbitu(buf, p.pos+done, n), n)
 		}
 	}
+}
+
+// readParts returns the bit runs of a field of up to 32 bits as one value.
+func readParts(buf []byte, parts ...part) uint32 {
+	var v uint32
+	for _, p := range parts {
+		v = v<<p.n | getbitu(buf, p.pos, p.n)
+	}
+	return v
 }
 
 // encode1019 builds an RTCM 1019 GPS ephemeris frame directly from the raw
