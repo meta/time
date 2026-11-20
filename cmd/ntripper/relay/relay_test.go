@@ -570,3 +570,21 @@ func TestStreamFramesKeepsPeriodicSendsOnSkippedEpochs(t *testing.T) {
 	require.Equal(t, []uint16{1033, 1019, 1019, rtcm.TypeGPSMSM7, 1019, 1019}, types,
 		"the cached 1019 is re-sent before every scanned frame, sent epoch or not")
 }
+
+func TestRunOnceCastsToConfigCaster(t *testing.T) {
+	caster := &recordingWriter{}
+	var dump bytes.Buffer
+	cfg := Config{socket: serveSocket(t, rawxFrame(61218)), Caster: caster, dumpW: &dump}
+
+	err := runOnce(t.Context(), cfg, slog.New(slog.DiscardHandler), stats.NewJSONStats(), rtcm.NewEphCollector(), newEpochGate(0))
+
+	require.ErrorContains(t, err, "socket:", "casts until the socket is gone, without dialing a caster")
+	types := make([]uint16, 0, len(caster.writes))
+	for _, w := range caster.writes {
+		f, err := rtcm.ParseFrame(w)
+		require.NoError(t, err)
+		types = append(types, f.MessageType)
+	}
+	require.Equal(t, []uint16{1033, rtcm.TypeGPSMSM7}, types)
+	require.Equal(t, bytes.Join(caster.writes, nil), dump.Bytes(), "-dump tees what Caster gets")
+}

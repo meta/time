@@ -47,6 +47,7 @@ const msg1033Interval = 30 * time.Second
 
 // Config holds ntripper's settings; RegisterFlags fills it from the command line.
 type Config struct {
+	Caster            io.Writer // one RTCM frame per Write
 	dumpW             io.Writer
 	socket            string
 	caster            string
@@ -129,7 +130,8 @@ func Main(cfg Config) int {
 		return 0
 	}
 
-	if !cfg.dryRun && !cfg.rawxStats && (cfg.caster == "" || cfg.password == "") {
+	needCaster := !cfg.dryRun && !cfg.rawxStats && cfg.Caster == nil
+	if needCaster && (cfg.caster == "" || cfg.password == "") {
 		fmt.Fprintln(os.Stderr, "required flags: -caster, -password")
 		flag.Usage()
 		return 1
@@ -137,7 +139,7 @@ func Main(cfg Config) int {
 	if cfg.mountpoint == "" && cfg.username != "" {
 		cfg.mountpoint = cfg.username
 	}
-	if !cfg.dryRun && !cfg.rawxStats && cfg.mountpoint == "" {
+	if needCaster && cfg.mountpoint == "" {
 		fmt.Fprintln(os.Stderr, "required: -mountpoint or -username")
 		flag.Usage()
 		return 1
@@ -331,11 +333,17 @@ func runOnce(
 		return fmt.Errorf("encoding 1033: %w", err)
 	}
 
-	client, err := connectCaster(ctx, cfg, logger)
-	if err != nil {
-		return fmt.Errorf("caster: %w", err)
+	client := cfg.Caster
+	if client == nil {
+		caster, err := connectCaster(ctx, cfg, logger)
+		if err != nil {
+			return fmt.Errorf("caster: %w", err)
+		}
+		defer caster.Close()
+		client = caster
+	} else if cfg.dumpW != nil {
+		client = io.MultiWriter(client, cfg.dumpW)
 	}
-	defer client.Close()
 
 	st.SetConnected(1)
 
