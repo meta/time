@@ -29,6 +29,7 @@ type EphCollector struct {
 	lastIODE map[uint8]uint32 // PRN -> IODE of the last emitted ephemeris
 	gal      map[uint8]*galInav
 	bds      map[uint8]*bdsNav
+	glo      map[uint8]*gloStrings
 	latest   map[satID][]byte
 }
 
@@ -45,6 +46,7 @@ func NewEphCollector() *EphCollector {
 		lastIODE: map[uint8]uint32{},
 		gal:      map[uint8]*galInav{},
 		bds:      map[uint8]*bdsNav{},
+		glo:      map[uint8]*gloStrings{},
 		latest:   map[satID][]byte{},
 	}
 }
@@ -77,6 +79,8 @@ func (c *EphCollector) AddSFRBX(payload []byte) []byte {
 		return c.emit(satID{GnssGalileo, svID}, c.addGalileo(svID, words))
 	case GnssBeiDou:
 		return c.emit(satID{GnssBeiDou, svID}, c.addBeiDou(svID, payload[2], words))
+	case GnssGLONASS:
+		return c.addGLONASS(svID, payload[3], words)
 	}
 	return nil
 }
