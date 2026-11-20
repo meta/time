@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package main
+package relay
 
 import (
 	"context"
@@ -96,7 +96,7 @@ func TestParseStreamCleanFile(t *testing.T) {
 	b, err := rtcm.Encode1033(rtcm.AntennaDescriptor{StationID: 2, AntennaType: "BB"})
 	require.NoError(t, err)
 	path := filepath.Join(t.TempDir(), "stream.rtcm3")
-	require.NoError(t, os.WriteFile(path, append(append([]byte{}, a...), b...), 0o644))
+	require.NoError(t, os.WriteFile(path, append(append([]byte{}, a...), b...), 0o600))
 	require.NoError(t, parseStream(path))
 }
 
@@ -160,7 +160,7 @@ func TestRunRetriesWhenSocketMissing(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 
-	cfg := config{
+	cfg := Config{
 		socket:            filepath.Join(t.TempDir(), "absent.sock"),
 		dryRun:            true,
 		reconnectInterval: time.Millisecond,
