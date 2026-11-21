@@ -76,6 +76,7 @@ const (
 	reqServerStats   CommandType = 54
 	reqNTPData       CommandType = 57
 	reqNTPSourceName CommandType = 65
+	reqAuthData      CommandType = 67
 	reqSelectData    CommandType = 69
 
 	reqClientAccessesByIndex3 CommandType = 68
@@ -91,6 +92,7 @@ const (
 	RpyServerStats   ReplyType = 14
 	RpyNTPData       ReplyType = 16
 	RpyNTPSourceName ReplyType = 19
+	RpyAuthData      ReplyType = 20
 	RpyServerStats2  ReplyType = 22
 	RpySelectData    ReplyType = 23
 	RpyServerStats3  ReplyType = 24
@@ -111,6 +113,36 @@ const (
 	SourceModePeer   ModeType = 1
 	SourceModeRef    ModeType = 2
 )
+
+// AuthModeType identifies the authentication mechanism of a source
+// (RPY_AD_MD_* in chrony's candm.h)
+type AuthModeType uint16
+
+// authentication modes reported by 'authdata'
+const (
+	AuthModeNone      AuthModeType = 0
+	AuthModeSymmetric AuthModeType = 1
+	AuthModeNTS       AuthModeType = 2
+)
+
+// AuthModeTypeDesc provides mapping from AuthModeType to string
+var AuthModeTypeDesc = [3]string{
+	"none",
+	"symmetric",
+	"nts",
+}
+
+func (m AuthModeType) String() string {
+	if int(m) >= len(AuthModeTypeDesc) {
+		return fmt.Sprintf("unknown (%d)", m)
+	}
+	return AuthModeTypeDesc[m]
+}
+
+// AuthDataNoKeyExchange is the value of AuthData.LastKEAgo when there was
+// no successful NTS key exchange yet, or the source doesn't use NTS
+// (chronyd sends -1 as uint32)
+const AuthDataNoKeyExchange uint32 = 0xffffffff
 
 // source state
 const (
@@ -296,6 +328,16 @@ type RequestNTPData struct {
 
 // RequestNTPSourceName - packet to request source name for peer IP.
 type RequestNTPSourceName struct {
+	RequestHead
+	IPAddr IPAddr
+	EOR    int32
+	// we pass at max ipv6 addr - 16 bytes
+	data [maxDataLen - 16]uint8
+}
+
+// RequestAuthData - packet to request authentication data for peer IP.
+// Mirrors REQ_AuthData in chrony's candm.h.
+type RequestAuthData struct {
 	RequestHead
 	IPAddr IPAddr
 	EOR    int32
@@ -914,6 +956,65 @@ func newSelectData(r *replySelectData) *SelectData {
 	}
 }
 
+// replyAuthDataContent is the wire-format reply, matching RPY_AuthData
+// in chrony's candm.h (chronyd doesn't send the trailing EOR field)
+type replyAuthDataContent struct {
+	Mode         AuthModeType
+	KeyType      uint16
+	KeyID        uint32
+	KeyLength    uint16
+	KEAttempts   uint16
+	LastKEAgo    uint32
+	Cookies      uint16
+	CookieLength uint16
+	NAK          uint16
+	Pad          uint16
+}
+
+// AuthData contains parsed version of 'authdata' reply.
+//
+// For symmetric keys, KeyID is the configured key number and KeyType
+// identifies the hash or cipher. For NTS, KeyID is the NTS-KE context ID,
+// KeyType is the negotiated AEAD algorithm (IANA AEAD registry number,
+// e.g. 15 for AEAD_AES_SIV_CMAC_256, 30 for AEAD_AES_128_GCM_SIV),
+// KeyLength is the length of the server-to-client key in bits, KEAttempts
+// is the number of NTS-KE attempts since the last successful one,
+// LastKEAgo is the number of seconds since the last successful NTS-KE
+// (AuthDataNoKeyExchange if there was none), Cookies is the number of
+// cookies currently held, CookieLength is the length of the next cookie in
+// bytes and NAK is true if the last NTS reply was a NAK.
+type AuthData struct {
+	Mode         AuthModeType
+	KeyType      uint16
+	KeyID        uint32
+	KeyLength    uint16
+	KEAttempts   uint16
+	LastKEAgo    uint32
+	Cookies      uint16
+	CookieLength uint16
+	NAK          bool
+}
+
+// ReplyAuthData is a usable version of 'authdata' response
+type ReplyAuthData struct {
+	ReplyHead
+	AuthData
+}
+
+func newAuthData(r *replyAuthDataContent) *AuthData {
+	return &AuthData{
+		Mode:         r.Mode,
+		KeyType:      r.KeyType,
+		KeyID:        r.KeyID,
+		KeyLength:    r.KeyLength,
+		KEAttempts:   r.KEAttempts,
+		LastKEAgo:    r.LastKEAgo,
+		Cookies:      r.Cookies,
+		CookieLength: r.CookieLength,
+		NAK:          r.NAK != 0,
+	}
+}
+
 // replyClientAccessesByIndexClient is the wire-format per-client entry,
 // matching RPY_ClientAccesses_Client in chrony's candm.h. 60 bytes.
 type replyClientAccessesByIndexClient struct {
@@ -1075,6 +1176,24 @@ func NewNTPSourceNamePacket(ip *IPAddr) *RequestNTPSourceName {
 			Version: protoVersionNumber,
 			PKTType: pktTypeCmdRequest,
 			Command: reqNTPSourceName,
+		},
+		IPAddr: *ip,
+		data:   [maxDataLen - 16]uint8{},
+	}
+}
+
+// NewAuthDataPacket creates new packet to request 'authdata' information
+// (authentication mode, NTS key exchange and cookie state) for given peer IP.
+//
+// chronyd (4.0+) answers this command only over the Unix socket
+// (see ChronySocketPath) unless it is explicitly allowed over the network
+// ('opencommands' in chrony 4.9+). Otherwise the reply is UNAUTH.
+func NewAuthDataPacket(ip *IPAddr) *RequestAuthData {
+	return &RequestAuthData{
+		RequestHead: RequestHead{
+			Version: protoVersionNumber,
+			PKTType: pktTypeCmdRequest,
+			Command: reqAuthData,
 		},
 		IPAddr: *ip,
 		data:   [maxDataLen - 16]uint8{},
@@ -1291,6 +1410,16 @@ func decodePacket(response []byte) (ResponsePacket, error) {
 		return &ReplyNTPSourceName{
 			ReplyHead:     *head,
 			NTPSourceName: *newNTPSourceName(data),
+		}, nil
+	case RpyAuthData:
+		data := new(replyAuthDataContent)
+		if err = binary.Read(r, binary.BigEndian, data); err != nil {
+			return nil, err
+		}
+		Logger.Printf("response data: %+v", data)
+		return &ReplyAuthData{
+			ReplyHead: *head,
+			AuthData:  *newAuthData(data),
 		}, nil
 	case RpyServerStats2:
 		data := new(ServerStats2)
