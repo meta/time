@@ -654,6 +654,178 @@ func TestDecodeSelectData(t *testing.T) {
 	require.Equal(t, want, packet)
 }
 
+func TestDecodeAuthDataNTS(t *testing.T) {
+	// Captured via `strace -xx -e trace=sendto,recvfrom chronyc authdata` against
+	// chronyd 4.6.1 over the unix socket; the reply carries no address to sanitize.
+	raw := []uint8{
+		0x06, 0x02, 0x00, 0x00, 0x00, 0x43, 0x00, 0x14, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd5, 0xde, 0xc6, 0xd9,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+		0x00, 0x0f, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x01, 0xe1, 0xfb, 0x00, 0x08, 0x00, 0x64, 0x00, 0x00,
+		0x00, 0x00,
+	}
+	packet, err := decodePacket(raw)
+	require.Nil(t, err)
+	// chronyc -c authdata: 2001:db8::4,NTS,1,15,256,123387,0,0,8,100
+	want := &ReplyAuthData{
+		ReplyHead: ReplyHead{
+			Version:  protoVersionNumber,
+			PKTType:  pktTypeCmdReply,
+			Res1:     0,
+			Res2:     0,
+			Command:  reqAuthData,
+			Reply:    RpyAuthData,
+			Status:   sttSuccess,
+			Sequence: 3588146905,
+		},
+		AuthData: AuthData{
+			Mode:         AuthModeNTS,
+			KeyType:      15,
+			KeyID:        1,
+			KeyLength:    256,
+			KEAttempts:   0,
+			LastKEAgo:    123387,
+			Cookies:      8,
+			CookieLength: 100,
+			NAK:          false,
+		},
+	}
+	require.Equal(t, want, packet)
+}
+
+func TestDecodeAuthDataNTSGCMSIV(t *testing.T) {
+	// Same capture as above, source negotiated AEAD_AES_128_GCM_SIV
+	raw := []uint8{
+		0x06, 0x02, 0x00, 0x00, 0x00, 0x43, 0x00, 0x14, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x79, 0x2d, 0x22, 0x39,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+		0x00, 0x1e, 0x00, 0x00, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+		0x00, 0x01, 0xe1, 0xfb, 0x00, 0x08, 0x00, 0x40, 0x00, 0x00,
+		0x00, 0x00,
+	}
+	packet, err := decodePacket(raw)
+	require.Nil(t, err)
+	r, ok := packet.(*ReplyAuthData)
+	require.True(t, ok)
+	require.Equal(t, AuthData{
+		Mode:         AuthModeNTS,
+		KeyType:      30,
+		KeyID:        1,
+		KeyLength:    128,
+		KEAttempts:   0,
+		LastKEAgo:    123387,
+		Cookies:      8,
+		CookieLength: 64,
+		NAK:          false,
+	}, r.AuthData)
+	require.Equal(t, "nts", r.Mode.String())
+}
+
+func TestDecodeAuthDataNoneAndSymmetric(t *testing.T) {
+	head := []uint8{
+		0x06, 0x02, 0x00, 0x00, 0x00, 0x43, 0x00, 0x14, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+	}
+	tests := []struct {
+		name string
+		data []uint8
+		want AuthData
+	}{
+		{
+			// unauthenticated source: everything zero, last KE "never"
+			name: "none",
+			data: []uint8{
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+			want: AuthData{
+				Mode:      AuthModeNone,
+				LastKEAgo: AuthDataNoKeyExchange,
+			},
+		},
+		{
+			// symmetric key 10, SHA1 (hash id 2), 160 bits
+			name: "symmetric",
+			data: []uint8{
+				0x00, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x0a,
+				0x00, 0xa0, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+			},
+			want: AuthData{
+				Mode:      AuthModeSymmetric,
+				KeyType:   2,
+				KeyID:     10,
+				KeyLength: 160,
+				LastKEAgo: AuthDataNoKeyExchange,
+			},
+		},
+		{
+			// NTS source that failed key exchange and got a NAK
+			name: "nts nak",
+			data: []uint8{
+				0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+				0x00, 0x00, 0x00, 0x03, 0xff, 0xff, 0xff, 0xff,
+				0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
+			},
+			want: AuthData{
+				Mode:       AuthModeNTS,
+				KEAttempts: 3,
+				LastKEAgo:  AuthDataNoKeyExchange,
+				NAK:        true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := make([]uint8, 0, len(head)+len(tt.data))
+			raw = append(raw, head...)
+			raw = append(raw, tt.data...)
+			packet, err := decodePacket(raw)
+			require.NoError(t, err)
+			r, ok := packet.(*ReplyAuthData)
+			require.True(t, ok)
+			require.Equal(t, tt.want, r.AuthData)
+		})
+	}
+}
+
+func TestDecodeAuthDataTruncated(t *testing.T) {
+	raw := []uint8{
+		0x06, 0x02, 0x00, 0x00, 0x00, 0x43, 0x00, 0x14, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x2a,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+	}
+	_, err := decodePacket(raw)
+	require.Error(t, err)
+}
+
+func TestEncodeAuthDataPacket(t *testing.T) {
+	ip := &IPAddr{IP: IPToBytes(net.ParseIP("2001:db8::4")), Family: IPAddrInet6}
+	p := NewAuthDataPacket(ip)
+	require.Equal(t, reqAuthData, p.Command)
+	require.Equal(t, *ip, p.IPAddr)
+
+	var buf bytes.Buffer
+	require.NoError(t, binary.Write(&buf, binary.BigEndian, p))
+	b := buf.Bytes()
+	// chronyd requires at least 52 bytes (header, address and
+	// anti-amplification padding up to the reply size)
+	require.GreaterOrEqual(t, len(b), 52)
+	require.Equal(t, []uint8{0x00, 0x43}, b[4:6])
+	require.Equal(t, ip.IP[:], b[20:36])
+	require.Equal(t, []uint8{0x00, 0x02}, b[36:38])
+}
+
+func TestAuthModeTypeToString(t *testing.T) {
+	require.Equal(t, "none", AuthModeNone.String())
+	require.Equal(t, "symmetric", AuthModeSymmetric.String())
+	require.Equal(t, "nts", AuthModeNTS.String())
+	require.Equal(t, "unknown (10)", AuthModeType(10).String())
+}
+
 func TestDecodeClientAccessesByIndex3(t *testing.T) {
 	// Captured via `strace -xx -e trace=recvfrom chronyc clients` against a
 	// chronyd serving real clients. Client IPs have been substituted with
@@ -993,7 +1165,15 @@ func FuzzDecodePacket(f *testing.F) {
 		0x75, 0x12, 0xea, 0xe7, 0x5b, 0x0c, 0xf0, 0x88, 0x1d, 0x4e,
 		0x16, 0x82, 0x1f, 0x69,
 	}
-	for _, seed := range [][]byte{{}, {0}, {9}, tracking} {
+	authData := []uint8{
+		0x06, 0x02, 0x00, 0x00, 0x00, 0x43, 0x00, 0x14, 0x00, 0x00,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xd5, 0xde, 0xc6, 0xd9,
+		0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+		0x00, 0x0f, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+		0x00, 0x01, 0xe1, 0xfb, 0x00, 0x08, 0x00, 0x64, 0x00, 0x00,
+		0x00, 0x00,
+	}
+	for _, seed := range [][]byte{{}, {0}, {9}, tracking, authData} {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, b []byte) {
@@ -1045,6 +1225,10 @@ func TestPacketEncodingNoPanic(t *testing.T) {
 			name:   "RequestSelectData",
 			packet: NewSelectDataPacket(1),
 		},
+		{
+			name:   "RequestAuthData",
+			packet: NewAuthDataPacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4}),
+		},
 	}
 
 	for _, tt := range tests {
@@ -1091,6 +1275,7 @@ func TestClientCommunicate(t *testing.T) {
 		{"NTPSourceName", NewNTPSourceNamePacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		{"NTPData", NewNTPDataPacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		{"SelectData", NewSelectDataPacket(1)},
+		{"AuthData", NewAuthDataPacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		// RequestClientAccessesByIndex is covered by the dedicated
 		// TestClientCommunicateClientAccessesByIndex test because its 520-byte
 		// wire size exceeds the 500-byte sanity limit asserted below.
@@ -1127,6 +1312,7 @@ func TestEORFieldInitialization(t *testing.T) {
 		{"RequestNTPSourceName", NewNTPSourceNamePacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		{"RequestNTPData", NewNTPDataPacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		{"RequestSelectData", NewSelectDataPacket(42)},
+		{"RequestAuthData", NewAuthDataPacket(&IPAddr{IP: IPToBytes(net.ParseIP("127.0.0.1")), Family: IPAddrInet4})},
 		{"RequestClientAccessesByIndex", NewClientAccessesByIndexPacket(0, MaxClientAccessesByIndex, 0)},
 	}
 
@@ -1143,6 +1329,8 @@ func TestEORFieldInitialization(t *testing.T) {
 			case *RequestNTPData:
 				require.Equal(t, int32(0), p.EOR, "EOR should be initialized to 0")
 			case *RequestSelectData:
+				require.Equal(t, int32(0), p.EOR, "EOR should be initialized to 0")
+			case *RequestAuthData:
 				require.Equal(t, int32(0), p.EOR, "EOR should be initialized to 0")
 			case *RequestClientAccessesByIndex:
 				require.Equal(t, int32(0), p.EOR, "EOR should be initialized to 0")
