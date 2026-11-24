@@ -160,6 +160,25 @@ func ActivatePPSSource(dev DeviceController, pinIndex uint) (*PPSSource, error) 
 	return &PPSSource{PHCDevice: dev, state: PPSSet, PPSPinIndex: pinIndex}, nil
 }
 
+// EnablePinFunc starts function pf on channel ch: drivers like ice program the pin only on these requests
+func EnablePinFunc(dev DeviceController, pf uint32, ch uint32) error {
+	switch pf {
+	case unix.PTP_PF_EXTTS:
+		return dev.extTTSRequest(&PtpExttsRequest{Index: ch, Flags: unix.PTP_ENABLE_FEATURE | unix.PTP_RISING_EDGE})
+	case unix.PTP_PF_PEROUT:
+		now, err := dev.Time()
+		if err != nil {
+			return fmt.Errorf("reading the PHC time for the PEROUT start: %w", err)
+		}
+		return dev.setPTPPerout(&PtpPeroutRequest{
+			Index:        ch,
+			StartOrPhase: PtpClockTime{Sec: now.Unix() + ppsStartDelay},
+			Period:       PtpClockTime{Sec: 1},
+		})
+	}
+	return nil
+}
+
 // Timestamp returns the timestamp of the last PPS output edge from the given PPS source
 func (ppsSource *PPSSource) Timestamp() (time.Time, error) {
 	if ppsSource.state != PPSSet {
@@ -279,7 +298,7 @@ func PPSSinkFromDevice(targetDevice DeviceController, pinIndex uint) (*PPSSink, 
 
 	req := &PtpExttsRequest{
 		Flags: unix.PTP_ENABLE_FEATURE | ppsSink.Polarity,
-		Index: uint32(ppsSink.InputPin), //nolint:gosec // InputPin is a small pin index that always fits in uint32
+		Index: defaultTs2PhcChannel,
 	}
 
 	err := targetDevice.setPinFunc(pinIndex, unix.PTP_PF_EXTTS, defaultTs2PhcChannel)
@@ -309,8 +328,8 @@ func (ppsSink *PPSSink) getPPSEventTimestamp() (time.Time, error) {
 		return time.Time{}, fmt.Errorf("error reading from sink %v: %w", ppsSink.Device.File().Name(), err)
 	}
 	event = *(*PtpExttsEvent)(unsafe.Pointer(&buf[0])) // urgh...
-	if uint(event.Index) != ppsSink.InputPin {
-		return time.Time{}, fmt.Errorf("extts on unexpected pin index %d, expected %d", event.Index, ppsSink.InputPin)
+	if event.Index != defaultTs2PhcChannel {
+		return time.Time{}, fmt.Errorf("extts on unexpected channel %d, expected %d", event.Index, defaultTs2PhcChannel)
 	}
 
 	t := event.T

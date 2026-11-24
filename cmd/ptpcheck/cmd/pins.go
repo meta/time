@@ -21,6 +21,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/facebook/time/phc"
 	"github.com/facebook/time/phc/unix" // a temporary shim for "golang.org/x/sys/unix" until v0.27.0 is cut
 	log "github.com/sirupsen/logrus"
 	"github.com/spf13/cobra"
@@ -84,6 +85,9 @@ func doListPins(device string) error {
 			pin.Func = uint32(pinFunc)
 			if err := unix.IoctlPtpPinSetfunc(int(f.Fd()), pin); err != nil {
 				return fmt.Errorf("%s: IoctlPtpPinSetfunc: %w", f.Name(), err)
+			}
+			if err := phc.EnablePinFunc(phc.FromFile(f), pin.Func, pin.Chan); err != nil {
+				return fmt.Errorf("%s: enabling %s on %s: %w", f.Name(), PinFunc(pin.Func), names[i], err)
 			}
 		}
 		if pinName == "" || pinName == names[i] {

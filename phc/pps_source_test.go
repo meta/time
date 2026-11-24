@@ -458,7 +458,7 @@ func TestPPSSink_getPPSEventTimestamp(t *testing.T) {
 	// Test cases
 	t.Run("successful read", func(t *testing.T) {
 		// Prepare
-		event := PtpExttsEvent{Index: 1, T: PtpClockTime{Sec: 1}}
+		event := PtpExttsEvent{Index: 0, T: PtpClockTime{Sec: 1}}
 
 		mockDevice.EXPECT().Read(gomock.Any()).Return(1, nil).Do(func(buf []byte) {
 			var intBuffer bytes.Buffer
@@ -491,7 +491,7 @@ func TestPPSSink_getPPSEventTimestamp(t *testing.T) {
 
 	t.Run("unexpected channel", func(t *testing.T) {
 		// Prepare
-		event := PtpExttsEvent{Index: 2, T: PtpClockTime{Sec: 1}}
+		event := PtpExttsEvent{Index: 1, T: PtpClockTime{Sec: 1}}
 
 		mockDevice.EXPECT().Read(gomock.Any()).Return(1, nil).Do(func(buf []byte) {
 			var intBuffer bytes.Buffer
@@ -543,6 +543,76 @@ func TestPollPPSSinkSkipsEventLatchedBeforeEnable(t *testing.T) {
 	timestamp, err = ppsSink.PollPPSSink()
 	require.NoError(t, err)
 	require.Equal(t, time.Unix(1075895958, 0), timestamp)
+}
+
+func TestPPSSinkFromDeviceUsesChannelZero(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	var req *PtpExttsRequest
+	gomock.InOrder(
+		mockDevice.EXPECT().Fd().Return(uintptr(3)),
+		mockDevice.EXPECT().setPinFunc(uint(1), unix.PTP_PF_EXTTS, uint(0)).Return(nil),
+		mockDevice.EXPECT().extTTSRequest(gomock.Any()).DoAndReturn(func(r *PtpExttsRequest) error {
+			req = r
+			return nil
+		}),
+		mockDevice.EXPECT().Time().Return(time.Unix(1075896000, 0), nil),
+	)
+	ppsSink, err := PPSSinkFromDevice(mockDevice, 1)
+	require.NoError(t, err)
+	require.Equal(t, uint32(0), req.Index)
+	require.Equal(t, uint(1), ppsSink.InputPin)
+}
+
+func TestEnablePinFuncExtts(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	var req *PtpExttsRequest
+	mockDevice.EXPECT().extTTSRequest(gomock.Any()).DoAndReturn(func(r *PtpExttsRequest) error {
+		req = r
+		return nil
+	})
+	require.NoError(t, EnablePinFunc(mockDevice, unix.PTP_PF_EXTTS, 2))
+	require.Equal(t, &PtpExttsRequest{Index: 2, Flags: unix.PTP_ENABLE_FEATURE | unix.PTP_RISING_EDGE}, req)
+}
+
+func TestEnablePinFuncPerout(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	var req *PtpPeroutRequest
+	gomock.InOrder(
+		mockDevice.EXPECT().Time().Return(time.Unix(1075896000, 300000000), nil),
+		mockDevice.EXPECT().setPTPPerout(gomock.Any()).DoAndReturn(func(r *PtpPeroutRequest) error {
+			req = r
+			return nil
+		}),
+	)
+	require.NoError(t, EnablePinFunc(mockDevice, unix.PTP_PF_PEROUT, 1))
+	want := &PtpPeroutRequest{Index: 1, StartOrPhase: PtpClockTime{Sec: 1075896002}, Period: PtpClockTime{Sec: 1}}
+	require.Equal(t, want, req)
+}
+
+func TestEnablePinFuncOtherFuncsDoNothing(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	require.NoError(t, EnablePinFunc(mockDevice, unix.PTP_PF_NONE, 0))
+	require.NoError(t, EnablePinFunc(mockDevice, unix.PTP_PF_PHYSYNC, 0))
+}
+
+func TestEnablePinFuncErrors(t *testing.T) {
+	_, mockDevice, finish := SetupMocks(t)
+	defer finish()
+	mockDevice.EXPECT().extTTSRequest(gomock.Any()).Return(fmt.Errorf("extts"))
+	require.ErrorContains(t, EnablePinFunc(mockDevice, unix.PTP_PF_EXTTS, 0), "extts")
+
+	mockDevice.EXPECT().Time().Return(time.Time{}, fmt.Errorf("clock"))
+	require.ErrorContains(t, EnablePinFunc(mockDevice, unix.PTP_PF_PEROUT, 0), "clock")
+
+	gomock.InOrder(
+		mockDevice.EXPECT().Time().Return(time.Unix(1075896000, 0), nil),
+		mockDevice.EXPECT().setPTPPerout(gomock.Any()).Return(fmt.Errorf("perout")),
+	)
+	require.ErrorContains(t, EnablePinFunc(mockDevice, unix.PTP_PF_PEROUT, 0), "perout")
 }
 
 func expectExttsEvent(t *testing.T, mockDevice *MockDeviceController, ts PtpClockTime) {
