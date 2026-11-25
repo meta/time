@@ -26,6 +26,7 @@ import (
 	"github.com/facebook/time/ptp/ptp4u/stats"
 	"github.com/facebook/time/timestamp"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/sys/unix"
 )
 
 func TestWorkerQueue(t *testing.T) {
@@ -82,6 +83,45 @@ func TestWorkerQueue(t *testing.T) {
 
 	require.Equal(t, 0, len(w.queue))
 	require.Equal(t, 0, len(w.signalingQueue))
+}
+
+func BenchmarkSendWorkerDelayReq(b *testing.B) {
+	c := &Config{
+		clockIdentity: ptp.ClockIdentity(1234),
+		StaticConfig: StaticConfig{
+			TimestampType: timestamp.SW,
+			Interface:     "lo",
+			IP:            net.ParseIP("127.0.0.1"),
+			QueueSize:     10,
+		},
+	}
+	w := newSendWorker(0, c, stats.NewJSONStats(1))
+	go w.Start()
+
+	clientFD := loopbackSocket(b)
+	defer unix.Close(clientFD)
+	require.NoError(b, unix.SetsockoptTimeval(clientFD, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 100000}))
+	clientAddr, err := unix.Getsockname(clientFD)
+	require.NoError(b, err)
+	sc := NewSubscriptionClient(w.queue, w.signalingQueue, clientAddr, clientAddr, ptp.MessageDelayReq, c, time.Second,
+		time.Now().Add(time.Hour))
+	buf := make([]byte, timestamp.PayloadSizeBytes)
+
+	// software timestamps reject SCM_TS_OPT_ID, so the first request only flips the worker to the fallback path
+	require.Eventually(b, func() bool {
+		w.queue <- sc
+		_, err := unix.Read(clientFD, buf)
+		return err == nil
+	}, time.Second, time.Millisecond)
+	_, err = unix.Read(clientFD, buf)
+	require.NoError(b, err)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		w.queue <- sc
+		_, _ = unix.Read(clientFD, buf) // sync
+		_, _ = unix.Read(clientFD, buf) // announce
+	}
 }
 
 func TestFindSubscription(t *testing.T) {

@@ -167,7 +167,33 @@ func TestDelayReqPtpingRefreshFollowsPort(t *testing.T) {
 	require.True(t, home.FindSubscription(client, ptp.MessageDelayReq) == sc, "a refresh must keep the subscription")
 }
 
-func eventServer(t *testing.T) (*Server, unix.Sockaddr) {
+func BenchmarkHandleEventMessagesDelayReq(b *testing.B) {
+	s, serverAddr := eventServer(b)
+	clientFD := loopbackSocket(b)
+	defer unix.Close(clientFD)
+	client := ptp.PortIdentity{ClockIdentity: 5678, PortNumber: 1}
+	queue := s.findWorker(client, 0).queue
+	req := delayReq(b, client, 0)
+
+	// resend until acted on: before the kernel turns RX stamping on, packets arrive unstamped and are dropped
+	require.Eventually(b, func() bool {
+		_ = unix.Sendto(clientFD, req, 0, serverAddr)
+		select {
+		case <-queue:
+			return true
+		case <-time.After(10 * time.Millisecond):
+			return false
+		}
+	}, time.Second, 20*time.Millisecond)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFD, req, 0, serverAddr)
+		<-queue
+	}
+}
+
+func eventServer(t testing.TB) (*Server, unix.Sockaddr) {
 	c := &Config{
 		clockIdentity: ptp.ClockIdentity(1234),
 		StaticConfig:  StaticConfig{TimestampType: timestamp.SW, SendWorkers: 10, QueueSize: 10},
@@ -188,14 +214,14 @@ func eventServer(t *testing.T) (*Server, unix.Sockaddr) {
 	return s, serverAddr
 }
 
-func loopbackSocket(t *testing.T) int {
+func loopbackSocket(t testing.TB) int {
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
 	require.NoError(t, err)
 	require.NoError(t, unix.Bind(fd, timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 0)))
 	return fd
 }
 
-func delayReq(t *testing.T, client ptp.PortIdentity, offset uint16) []byte {
+func delayReq(t testing.TB, client ptp.PortIdentity, offset uint16) []byte {
 	size := binary.Size(ptp.Header{}) + binary.Size(ptp.SyncDelayReqBody{}) + binary.Size(ptp.AlternateResponsePortTLV{})
 	req := &ptp.SyncDelayReq{
 		Header: ptp.Header{

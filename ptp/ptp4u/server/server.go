@@ -274,7 +274,6 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 	buf := make([]byte, timestamp.PayloadSizeBytes)
 	oob := make([]byte, timestamp.ControlSizeBytes)
 	dReq := &ptp.SyncDelayReq{}
-	zerotlv := []ptp.TLV{}
 	var msgType ptp.MessageType
 	var worker *sendWorker
 	var sc *SubscriptionClient
@@ -321,7 +320,7 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 
 		switch msgType {
 		case ptp.MessageDelayReq:
-			dReq.TLVs = zerotlv
+			dReq.TLVs = dReq.TLVs[:0]
 			workerOffset = 0
 			if err := ptp.FromBytes(buf[:bbuf], dReq); err != nil {
 				log.Errorf("Failed to read the ptp SyncDelayReq: %v", err)
