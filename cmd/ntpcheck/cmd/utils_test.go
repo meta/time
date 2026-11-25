@@ -17,8 +17,13 @@ limitations under the License.
 package cmd
 
 import (
+	"io"
+	"net"
+	"os"
 	"testing"
+	"time"
 
+	ntp "github.com/facebook/time/ntp/protocol"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/require"
 )
@@ -75,4 +80,71 @@ func TestConfigureVerbosity(t *testing.T) {
 	verbose = true
 	ConfigureVerbosity()
 	require.Equal(t, log.DebugLevel, log.GetLevel())
+}
+
+// startNTPServer runs an NTP server on localhost that is one second ahead.
+// It answers the requests for which bad returns true with a truncated packet.
+func startNTPServer(t *testing.T, bad func(n int) bool) string {
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { conn.Close() })
+	go func() {
+		buf := make([]byte, 1024)
+		for n := 0; ; n++ {
+			l, addr, err := conn.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			if bad(n) {
+				_, _ = conn.WriteTo([]byte{0}, addr)
+				continue
+			}
+			req, err := ntp.BytesToPacket(buf[:l])
+			if err != nil {
+				return
+			}
+			sec, frac := ntp.Time(time.Now().Add(time.Second))
+			resp := &ntp.Packet{
+				Settings:     0x24,
+				Stratum:      1,
+				OrigTimeSec:  req.TxTimeSec,
+				OrigTimeFrac: req.TxTimeFrac,
+				RxTimeSec:    sec,
+				RxTimeFrac:   frac,
+				TxTimeSec:    sec,
+				TxTimeFrac:   frac,
+			}
+			b, err := resp.Bytes()
+			if err != nil {
+				return
+			}
+			_, _ = conn.WriteTo(b, addr)
+		}
+	}()
+	_, port, err := net.SplitHostPort(conn.LocalAddr().String())
+	require.NoError(t, err)
+	return port
+}
+
+func TestNtpDateAverageSkipsFailedRequests(t *testing.T) {
+	port := startNTPServer(t, func(n int) bool { return n == 0 })
+
+	r, w, err := os.Pipe()
+	require.NoError(t, err)
+	stdout := os.Stdout
+	os.Stdout = w
+	err = ntpDate("127.0.0.1", port, 4, "")
+	w.Close()
+	os.Stdout = stdout
+	require.NoError(t, err)
+	out, err := io.ReadAll(r)
+	require.NoError(t, err)
+
+	// the server is 1s ahead, so the average offset must be close to 1s
+	require.Contains(t, string(out), "Average (3 requests):\nOffset: 1.0")
+}
+
+func TestNtpDateNoValidResponses(t *testing.T) {
+	port := startNTPServer(t, func(int) bool { return true })
+	require.Error(t, ntpDate("127.0.0.1", port, 2, ""))
 }

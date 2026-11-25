@@ -159,6 +159,7 @@ func ntpDate(remoteServerAddr string, remoteServerPort string, requests int, ntp
 
 	var sumDelay int64
 	var sumOffset int64
+	var received int
 	var i int
 	var skipped int
 	// report how many packets were skipped, and how many processed if we encounter an error
@@ -236,6 +237,7 @@ func ntpDate(remoteServerAddr string, remoteServerPort string, requests int, ntp
 
 		sumDelay += delay
 		sumOffset += offset
+		received++
 
 		if i == requests-1 {
 			fmt.Printf("\nServer: %s, Stratum: %d, Reference ID: %s, Requests %d\n", addr, response.Stratum, chrony.RefidToString(response.ReferenceID), requests)
@@ -248,9 +250,12 @@ func ntpDate(remoteServerAddr string, remoteServerPort string, requests int, ntp
 			fmt.Printf("Correct Time is %s\n\n", correctTime)
 		}
 	}
-	avgDelay := float64(sumDelay) / float64(requests)
-	avgOffset := float64(sumOffset) / float64(requests)
-	fmt.Printf("Average (%d requests):\n", requests)
+	if received == 0 {
+		return fmt.Errorf("no valid responses from %s to %d requests", addr, requests)
+	}
+	avgDelay := float64(sumDelay) / float64(received)
+	avgOffset := float64(sumOffset) / float64(received)
+	fmt.Printf("Average (%d requests):\n", received)
 	fmt.Printf("Offset: %fs (%sus) | Delay: %fs (%sus)\n",
 		avgOffset/float64(time.Second.Nanoseconds()),
 		stripZeroes(math.Round(avgOffset/float64(time.Microsecond.Nanoseconds()))),
