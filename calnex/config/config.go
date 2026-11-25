@@ -280,7 +280,21 @@ func Config(target string, insecureTLS bool, cc *CalnexConfig, apply bool) error
 		}
 	}
 
+	if err = enableSFTP(api, target, f.Section("network")); err != nil {
+		log.Errorf("%s: failed to enable SFTP: %s", target, err)
+	}
+
 	return nil
+}
+
+// enableSFTP turns on SFTP access, which is how problem reports are fetched.
+// sftp_enable only reports the state: pushing it via settings does nothing.
+func enableSFTP(calnexAPI *api.API, target string, network *ini.Section) error {
+	if network.Key("sftp_enable").Value() != api.OFF {
+		return nil
+	}
+	log.Infof("%s: enabling SFTP", target)
+	return calnexAPI.EnableSFTP()
 }
 
 // Save saves the Network/Calnex configs to file

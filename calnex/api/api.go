@@ -625,6 +625,7 @@ const (
 	instrumentStatusURL = "https://%s/api/instrument/status"
 	powerSupplyURL      = "https://%s/api/getpowersupplyinfo"
 	rbURL               = "https://%s/api/rb/status"
+	sftpEnableURL       = "https://%s/api/sftp/enable"
 )
 
 var (
@@ -1221,6 +1222,11 @@ func (a *API) FetchUptime() (*Uptime, error) {
 	}
 
 	return u, nil
+}
+
+// EnableSFTP enables SFTP access
+func (a *API) EnableSFTP() error {
+	return a.get(sftpEnableURL)
 }
 
 // FetchSystemMonitor returns system monitor data

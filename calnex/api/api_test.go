@@ -1041,6 +1041,24 @@ func TestFetchUptime(t *testing.T) {
 	require.Equal(t, expected, f)
 }
 
+func TestEnableSFTP(t *testing.T) {
+	ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sftp/enable" {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprintln(w, `{"result": true}`)
+	}))
+	defer ts.Close()
+
+	parsed, _ := url.Parse(ts.URL)
+	calnexAPI, err := NewAPI(parsed.Host, true, time.Second)
+	require.NoError(t, err)
+	calnexAPI.Client = ts.Client()
+
+	require.NoError(t, calnexAPI.EnableSFTP())
+}
+
 func TestFetchSystemMonitor(t *testing.T) {
 	sampleResp := `{"cpu_usage":48.01,"free_memory":380489728,"installed_memory":1034510336,"memory_usage":540426240,"start_time":3940,"system_time":5484133,"thread_id":2660,"threads":24,"user_time":180330942}`
 	expected := &SystemMonitor{

@@ -1274,6 +1274,52 @@ func TestConfig(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestConfigSFTP(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		sftpEnable  string
+		enableFails bool
+		wantEnables int32
+	}{
+		{name: "off", sftpEnable: api.OFF, wantEnables: 1},
+		{name: "on", sftpEnable: api.ON},
+		{name: "enable fails", sftpEnable: api.OFF, enableFails: true, wantEnables: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var enables atomic.Int32
+			ts := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/getsettings":
+					fmt.Fprintf(w, "[network]\nsftp_enable=%s\n", tc.sftpEnable)
+				case "/api/getstatus":
+					fmt.Fprintln(w, `{"measurementActive": true}`)
+				case "/api/sftp/enable":
+					enables.Add(1)
+					if tc.enableFails {
+						http.Error(w, "SFTP unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					fmt.Fprintln(w, `{"result": true}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer ts.Close()
+
+			parsed, err := url.Parse(ts.URL)
+			require.NoError(t, err)
+			cc := &CalnexConfig{
+				Measure: map[api.Channel]MeasureConfig{
+					api.ChannelA: {Target: "1 PPS", Probe: api.ProbePPS},
+				},
+			}
+
+			require.NoError(t, Config(parsed.Host, true, cc, true))
+			require.Equal(t, tc.wantEnables, enables.Load())
+		})
+	}
+}
+
 func TestConfigFail(t *testing.T) {
 	cc := &CalnexConfig{
 		Measure: map[api.Channel]MeasureConfig{
