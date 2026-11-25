@@ -54,9 +54,9 @@ type UDPConn struct {
 	connFd int
 }
 
-// NewUDPConn initialises a new struct UDPConn
-func NewUDPConn(address net.IP, port int) (*UDPConn, error) {
-	connFd, err := listenUDP(address, port)
+// NewUDPConn initialises a new struct UDPConn bound to iface
+func NewUDPConn(address net.IP, port int, iface string) (*UDPConn, error) {
+	connFd, err := listenUDP(address, port, iface)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func NewUDPConnTS(address net.IP, port int, ts timestamp.Timestamp, iface *net.I
 	if iface.Index <= 0 || iface.Index > math.MaxInt32 {
 		return nil, fmt.Errorf("interface index %d out of range", iface.Index)
 	}
-	udpConn, err := NewUDPConn(address, port)
+	udpConn, err := NewUDPConn(address, port, iface.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -253,7 +253,7 @@ func (c *UDPConnTS) RXTimestamp(oob []byte, boob int) (time.Time, error) {
 	return timestamp.ReadRXTimestamp(oob, boob)
 }
 
-func listenUDP(address net.IP, port int) (int, error) {
+func listenUDP(address net.IP, port int, iface string) (int, error) {
 	domain := unix.AF_INET6
 	if address.To4() != nil {
 		domain = unix.AF_INET
@@ -269,6 +269,10 @@ func listenUDP(address net.IP, port int) (int, error) {
 	// set the connection to blocking mode, otherwise recvmsg will just return with nothing most of the time
 	if err := unix.SetNonblock(connFd, false); err != nil {
 		return 0, fmt.Errorf("failed to set event socket to blocking: %w", err)
+	}
+	// before bind(): after it the rehash drops the socket from its SO_REUSEPORT group
+	if err := unix.SetsockoptString(connFd, unix.SOL_SOCKET, unix.SO_BINDTODEVICE, iface); err != nil {
+		return 0, fmt.Errorf("binding socket to %s: %w", iface, err)
 	}
 	// bind the socket to the address + port
 	localAddr := timestamp.IPToSockaddr(address, port)

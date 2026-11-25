@@ -265,7 +265,7 @@ func (p *SPTP) init() error {
 	p.pdelaySrc = p.peerDelaySources()
 	p.corrector = newCorrector(p.cfg.Asymmetry)
 
-	p.genConn, err = NewUDPConn(net.ParseIP(p.cfg.ListenAddress), ptp.PortGeneral)
+	p.genConn, err = NewUDPConn(net.ParseIP(p.cfg.ListenAddress), ptp.PortGeneral, iface.Name)
 	if err != nil {
 		return fmt.Errorf("binding to %d: %w", ptp.PortGeneral, err)
 	}
