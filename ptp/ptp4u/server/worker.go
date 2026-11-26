@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -150,19 +151,22 @@ func (s *sendWorker) Start() {
 	// TMP buffers
 	toob := make([]byte, timestamp.ControlSizeBytes)
 	soob := make([]byte, unix.CmsgSpace(timestamp.SizeofSeqID))
+	var dst sockaddrs
 
 	olderKernel := false // kernels prior to 6.13 do not support SCM_TS_OPT_ID
 
 	var (
-		n        int
-		attempts int
-		txTS     time.Time
-		c        *SubscriptionClient
+		n            int
+		attempts     int
+		txTS         time.Time
+		c            *SubscriptionClient
+		eaddr, gaddr netip.AddrPort
 	)
 
 	for {
 		select {
 		case c = <-s.queue:
+			eaddr, gaddr = c.Addrs()
 			switch c.subscriptionType {
 			case ptp.MessageSync:
 				// send sync
@@ -174,7 +178,7 @@ func (s *sendWorker) Start() {
 				}
 				if olderKernel {
 					log.Debug("Sending sync")
-					err = unix.Sendto(eFd, buf[:n], 0, c.eclisa)
+					err = unix.Sendto(eFd, buf[:n], 0, dst.to(eaddr))
 					if err != nil {
 						log.Errorf("Failed to send the sync packet: %v", err)
 						continue
@@ -194,7 +198,7 @@ func (s *sendWorker) Start() {
 					seqID := uint32(c.Sync().SequenceID)
 					log.Debug("Sending sync (SCM_TS_OPT_ID set)")
 					timestamp.SeqIDSocketControlMessage(seqID, soob)
-					err = unix.Sendmsg(eFd, buf[:n], soob, c.eclisa, 0)
+					err = unix.Sendmsg(eFd, buf[:n], soob, dst.to(eaddr), 0)
 					if errors.Is(err, unix.EINVAL) {
 						// EINVAL means the kernel does not support SCM_TS_OPT_ID
 						// fallback to previous approach
@@ -224,7 +228,7 @@ func (s *sendWorker) Start() {
 				}
 				log.Debug("Sending followup")
 
-				err = unix.Sendto(gFd, buf[:n], 0, c.gclisa)
+				err = unix.Sendto(gFd, buf[:n], 0, dst.to(gaddr))
 				if err != nil {
 					log.Errorf("Failed to send the followup packet: %v", err)
 					continue
@@ -240,7 +244,7 @@ func (s *sendWorker) Start() {
 				}
 				log.Debug("Sending announce")
 
-				err = unix.Sendto(gFd, buf[:n], 0, c.gclisa)
+				err = unix.Sendto(gFd, buf[:n], 0, dst.to(gaddr))
 				if err != nil {
 					log.Errorf("Failed to send the announce packet: %v", err)
 					continue
@@ -255,7 +259,7 @@ func (s *sendWorker) Start() {
 				}
 				log.Debug("Sending delay response")
 
-				err = unix.Sendto(gFd, buf[:n], 0, c.gclisa)
+				err = unix.Sendto(gFd, buf[:n], 0, dst.to(gaddr))
 				if err != nil {
 					log.Errorf("Failed to send the delay response: %v", err)
 					continue
@@ -275,7 +279,7 @@ func (s *sendWorker) Start() {
 
 				if olderKernel {
 					log.Debug("Sending sync")
-					err = unix.Sendto(eFd, buf[:n], 0, c.eclisa)
+					err = unix.Sendto(eFd, buf[:n], 0, dst.to(eaddr))
 					if err != nil {
 						log.Errorf("Failed to send the sync packet: %v", err)
 						continue
@@ -295,7 +299,7 @@ func (s *sendWorker) Start() {
 					seqID := uint32(c.Sync().SequenceID)
 					log.Debug("Sending sync (SCM_TS_OPT_ID set)")
 					timestamp.SeqIDSocketControlMessage(seqID, soob)
-					err = unix.Sendmsg(eFd, buf[:n], soob, c.eclisa, 0)
+					err = unix.Sendmsg(eFd, buf[:n], soob, dst.to(eaddr), 0)
 					if errors.Is(err, unix.EINVAL) {
 						// EINVAL means the kernel does not support SCM_TS_OPT_ID
 						// fallback to previous approach
@@ -324,7 +328,7 @@ func (s *sendWorker) Start() {
 				}
 				log.Debug("Sending announce")
 
-				err = unix.Sendto(gFd, buf[:n], 0, c.gclisa)
+				err = unix.Sendto(gFd, buf[:n], 0, dst.to(gaddr))
 				if err != nil {
 					log.Errorf("Failed to send the announce packet: %v", err)
 					continue
@@ -337,12 +341,13 @@ func (s *sendWorker) Start() {
 			c.IncSequenceID()
 			s.stats.SetMaxWorkerQueue(s.id, int64(len(s.queue)))
 		case c = <-s.signalingQueue:
+			_, gaddr = c.Addrs()
 			n, err = ptp.BytesTo(c.Signaling(), buf)
 			if err != nil {
 				log.Errorf("Failed to prepare the unicast signaling: %v", err)
 				continue
 			}
-			err = unix.Sendto(gFd, buf[:n], 0, c.gclisa)
+			err = unix.Sendto(gFd, buf[:n], 0, dst.to(gaddr))
 			if err != nil {
 				log.Errorf("Failed to send the unicast signaling: %v", err)
 				continue
@@ -358,6 +363,25 @@ func (s *sendWorker) Start() {
 			}
 		}
 	}
+}
+
+// sockaddrs holds one reusable destination per address family, so sending does not allocate a unix.Sockaddr.
+// The returned value is only valid until the next call.
+type sockaddrs struct {
+	in4 unix.SockaddrInet4
+	in6 unix.SockaddrInet6
+}
+
+func (s *sockaddrs) to(addr netip.AddrPort) unix.Sockaddr {
+	if addr.Addr().Is4() {
+		s.in4.Addr = addr.Addr().As4()
+		s.in4.Port = int(addr.Port())
+		return &s.in4
+	}
+	s.in6.Addr = addr.Addr().As16()
+	s.in6.Port = int(addr.Port())
+	s.in6.ZoneId = timestamp.ScopeID(addr.Addr())
+	return &s.in6
 }
 
 // FindSubscription retrieves an existing client

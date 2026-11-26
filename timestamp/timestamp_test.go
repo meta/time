@@ -109,6 +109,20 @@ func TestSockaddrToPort(t *testing.T) {
 	require.Equal(t, port, SockaddrToPort(sa6))
 }
 
+func TestSockaddrToAddrPort(t *testing.T) {
+	for _, s := range []string{"127.0.0.1:123", "[::1]:123", "[::ffff:10.0.0.1]:320"} {
+		want := netip.MustParseAddrPort(s)
+		require.Equal(t, want, SockaddrToAddrPort(AddrToSockaddr(want.Addr(), int(want.Port()))), s)
+	}
+	require.Equal(t, netip.AddrPort{}, SockaddrToAddrPort(&unix.SockaddrUnix{Name: "/tmp/sock"}))
+	require.Equal(t, netip.AddrPort{}, SockaddrToAddrPort(&unix.SockaddrInet4{Port: 1 << 16}))
+
+	linkLocal := SockaddrToAddrPort(&unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7})
+	require.Equal(t, netip.MustParseAddrPort("[fe80::1%7]:319"), linkLocal)
+	require.Equal(t, uint32(7), ScopeID(linkLocal.Addr()))
+	require.Zero(t, ScopeID(netip.MustParseAddr("::1")))
+}
+
 func TestTimestampUnmarshalText(t *testing.T) {
 	var ts Timestamp
 	require.Equal(t, "timestamp", ts.Type())

@@ -19,12 +19,11 @@ package server
 import (
 	"context"
 	"encoding/binary"
-	"net"
+	"net/netip"
 	"testing"
 	"time"
 
 	ptp "github.com/facebook/time/ptp/protocol"
-	"github.com/facebook/time/timestamp"
 
 	"github.com/stretchr/testify/require"
 )
@@ -49,9 +48,9 @@ func TestSubscriptionStart(t *testing.T) {
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
 	interval := 1 * time.Minute
 	expire := time.Now().Add(1 * time.Minute)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
-	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, nil, ptp.MessageAnnounce, c, interval, expire)
-	sc.SetGclisa(sa)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
+	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, netip.AddrPort{}, ptp.MessageAnnounce, c, interval, expire)
+	sc.SetGaddr(sa)
 
 	go sc.Start(context.Background())
 	time.Sleep(100 * time.Millisecond)
@@ -62,15 +61,41 @@ func TestSubscriptionStart(t *testing.T) {
 func TestSubscriptionBump(t *testing.T) {
 	w := &sendWorker{}
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
-	moved := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 456)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
+	moved := netip.MustParseAddrPort("127.0.0.1:456")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageDelayReq, c, time.Minute, time.Now().Add(time.Minute))
 
 	go sc.Start(t.Context())
 	sc.Bump(time.Now().Add(-time.Second), moved)
 	require.Eventually(t, sc.Running, time.Second, time.Millisecond)
-	require.Equal(t, moved, sc.Eclisa())
+	eaddr, gaddr := sc.Addrs()
+	require.Equal(t, moved, eaddr)
+	require.Equal(t, sa, gaddr, "a bump must not move the general address")
 	require.True(t, sc.Expired())
+}
+
+// TestSubscriptionBumpZeroAlloc keeps the per-DELAY_REQ refresh of a known client allocation free, even when its port moves
+func TestSubscriptionBumpZeroAlloc(t *testing.T) {
+	w := &sendWorker{}
+	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
+	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageDelayReq, c, time.Minute, time.Now().Add(time.Minute))
+	moved := netip.MustParseAddrPort("127.0.0.1:456")
+	expire := time.Now().Add(time.Minute)
+	require.Zero(t, testing.AllocsPerRun(100, func() { sc.Bump(expire, moved) }))
+}
+
+func BenchmarkSubscriptionBump(b *testing.B) {
+	w := &sendWorker{}
+	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
+	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageDelayReq, c, time.Minute, time.Now().Add(time.Minute))
+	moved := netip.MustParseAddrPort("127.0.0.1:456")
+	expire := time.Now().Add(time.Minute)
+	b.ReportAllocs()
+	for b.Loop() {
+		sc.Bump(expire, moved)
+	}
 }
 
 func TestSubscriptionExpire(t *testing.T) {
@@ -80,7 +105,7 @@ func TestSubscriptionExpire(t *testing.T) {
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
 	interval := 10 * time.Millisecond
 	expire := time.Now().Add(200 * time.Millisecond)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageDelayResp, c, interval, expire)
 
 	go sc.Start(context.Background())
@@ -103,7 +128,7 @@ func TestSubscriptionStop(t *testing.T) {
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
 	interval := 32 * time.Second
 	expire := time.Now().Add(1 * time.Minute)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, interval, expire)
 
 	go sc.Start(context.Background())
@@ -135,7 +160,7 @@ func TestSubscriptionEnd(t *testing.T) {
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
 	interval := 10 * time.Millisecond
 	expire := time.Now().Add(300 * time.Millisecond)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageDelayResp, c, interval, expire)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -152,7 +177,7 @@ func TestSubscriptionEnd(t *testing.T) {
 func TestSubscriptionflags(t *testing.T) {
 	w := &sendWorker{}
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	sc.UpdateSync()
@@ -174,7 +199,7 @@ func TestSyncPacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 	sc.sequenceID = sequenceID
 
@@ -198,7 +223,7 @@ func TestSyncDelayReqPacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 	sc.sequenceID = sequenceID
 
@@ -224,7 +249,7 @@ func TestFollowupPacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 	sc.sequenceID = sequenceID
 	sc.SetInterval(interval)
@@ -262,7 +287,7 @@ func TestAnnouncePacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 	sc.sequenceID = sequenceID
 	sc.SetInterval(interval)
@@ -310,7 +335,7 @@ func TestAnnounceDelayReqPacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	sp := ptp.PortIdentity{
@@ -345,7 +370,7 @@ func TestDelayRespPacket(t *testing.T) {
 			DomainNumber: uint(domainNumber),
 		},
 	}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	sp := ptp.PortIdentity{
@@ -374,7 +399,7 @@ func TestSignalingGrantPacket(t *testing.T) {
 
 	w := &sendWorker{}
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 	sg := &ptp.Signaling{}
 
@@ -405,7 +430,7 @@ func TestSignalingGrantPacket(t *testing.T) {
 func TestSignalingCancelPacket(t *testing.T) {
 	w := &sendWorker{}
 	c := &Config{clockIdentity: ptp.ClockIdentity(1234)}
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	sc.signaling.MessageLength = uint16(binary.Size(ptp.Header{}) + binary.Size(ptp.PortIdentity{}) + binary.Size(ptp.CancelUnicastTransmissionTLV{}))
@@ -433,7 +458,7 @@ func TestSendSignalingGrant(t *testing.T) {
 		},
 	}
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	require.Equal(t, 0, len(w.signalingQueue))
@@ -456,7 +481,7 @@ func TestSendSignalingCancel(t *testing.T) {
 		},
 	}
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Time{})
 
 	require.Equal(t, 0, len(w.signalingQueue))

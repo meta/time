@@ -22,13 +22,12 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"net/netip"
 	"sync"
 	"time"
 
 	ptp "github.com/facebook/time/ptp/protocol"
-	"github.com/facebook/time/timestamp"
 	log "github.com/sirupsen/logrus"
-	"golang.org/x/sys/unix"
 )
 
 // SubscriptionClient is sending subscriptionType messages periodically
@@ -49,9 +48,9 @@ type SubscriptionClient struct {
 	runningInterval time.Duration
 	intervalTicker  *time.Ticker
 
-	// socket addresses
-	eclisa unix.Sockaddr
-	gclisa unix.Sockaddr
+	// client addresses, guarded by the mutex: receivers move them while a worker sends
+	eaddr netip.AddrPort
+	gaddr netip.AddrPort
 
 	// packets
 	syncP      *ptp.SyncDelayReq
@@ -62,10 +61,10 @@ type SubscriptionClient struct {
 }
 
 // NewSubscriptionClient gets minimal required arguments to create a subscription
-func NewSubscriptionClient(q chan *SubscriptionClient, gq chan *SubscriptionClient, eclisa, gclisa unix.Sockaddr, st ptp.MessageType, sc *Config, i time.Duration, e time.Time) *SubscriptionClient {
+func NewSubscriptionClient(q chan *SubscriptionClient, gq chan *SubscriptionClient, eaddr, gaddr netip.AddrPort, st ptp.MessageType, sc *Config, i time.Duration, e time.Time) *SubscriptionClient {
 	s := &SubscriptionClient{
-		eclisa:           eclisa,
-		gclisa:           gclisa,
+		eaddr:            eaddr,
+		gaddr:            gaddr,
 		subscriptionType: st,
 		interval:         i,
 		expire:           e,
@@ -85,7 +84,8 @@ func NewSubscriptionClient(q chan *SubscriptionClient, gq chan *SubscriptionClie
 
 // Start launches the subscription timers and exit on expire
 func (sc *SubscriptionClient) Start(ctx context.Context) {
-	ip := timestamp.SockaddrToIP(sc.Eclisa())
+	eaddr, _ := sc.Addrs()
+	ip := eaddr.Addr().Unmap()
 	log.Infof("Starting a new %s subscription for %s", sc.subscriptionType, ip)
 	sc.setRunning(true)
 
@@ -178,26 +178,26 @@ func (sc *SubscriptionClient) SetInterval(interval time.Duration) {
 	sc.interval = interval
 }
 
-// Bump atomically sets expire and eclisa
-func (sc *SubscriptionClient) Bump(expire time.Time, eclisa unix.Sockaddr) {
+// Bump atomically sets expire and eaddr
+func (sc *SubscriptionClient) Bump(expire time.Time, eaddr netip.AddrPort) {
 	sc.Lock()
 	defer sc.Unlock()
 	sc.expire = expire
-	sc.eclisa = eclisa
+	sc.eaddr = eaddr
 }
 
-// Eclisa atomically returns eclisa
-func (sc *SubscriptionClient) Eclisa() unix.Sockaddr {
+// Addrs atomically returns the event and general addresses of the client
+func (sc *SubscriptionClient) Addrs() (netip.AddrPort, netip.AddrPort) {
 	sc.Lock()
 	defer sc.Unlock()
-	return sc.eclisa
+	return sc.eaddr, sc.gaddr
 }
 
-// SetGclisa atomically sets gclisa
-func (sc *SubscriptionClient) SetGclisa(gclisa unix.Sockaddr) {
+// SetGaddr atomically sets gaddr
+func (sc *SubscriptionClient) SetGaddr(gaddr netip.AddrPort) {
 	sc.Lock()
 	defer sc.Unlock()
-	sc.gclisa = gclisa
+	sc.gaddr = gaddr
 }
 
 // Running returns the running bool

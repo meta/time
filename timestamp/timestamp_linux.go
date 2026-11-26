@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"math"
 	"net"
+	"net/netip"
 	"syscall"
 	"time"
 	"unsafe"
@@ -279,6 +280,49 @@ func pollForHWTS(connFd int, poll pollFunc) error {
 		}
 		return nil
 	}
+}
+
+// recvmsgAddrPort is unix.Recvmsg for UDP sockets. It decodes the sender into a netip.AddrPort
+// instead of allocating a unix.Sockaddr, and skips the SO_PROTOCOL getsockopt unix.Recvmsg does per packet.
+func recvmsgAddrPort(connFd int, buf, oob []byte) (int, int, netip.AddrPort, error) {
+	var rsa unix.RawSockaddrAny
+	var iov unix.Iovec
+	var msg unix.Msghdr
+	msg.Name = (*byte)(unsafe.Pointer(&rsa))
+	msg.Namelen = unix.SizeofSockaddrAny
+	if len(buf) > 0 {
+		iov.Base = &buf[0]
+		iov.SetLen(len(buf))
+		msg.Iov = &iov
+		msg.SetIovlen(1)
+	}
+	if len(oob) > 0 {
+		msg.Control = &oob[0]
+		msg.SetControllen(len(oob))
+	}
+	n, _, e1 := unix.Syscall(unix.SYS_RECVMSG, uintptr(connFd), uintptr(unsafe.Pointer(&msg)), 0)
+	if e1 != 0 {
+		return 0, 0, netip.AddrPort{}, e1
+	}
+	var from netip.AddrPort
+	switch rsa.Addr.Family {
+	case unix.AF_INET:
+		pp := (*unix.RawSockaddrInet4)(unsafe.Pointer(&rsa))
+		from = netip.AddrPortFrom(netip.AddrFrom4(pp.Addr), networkPort(&pp.Port))
+	case unix.AF_INET6:
+		pp := (*unix.RawSockaddrInet6)(unsafe.Pointer(&rsa))
+		from = netip.AddrPortFrom(addrFrom16(pp.Addr, pp.Scope_id), networkPort(&pp.Port))
+	default:
+		return 0, 0, netip.AddrPort{}, fmt.Errorf("unsupported address family %d", rsa.Addr.Family)
+	}
+	// the kernel fills at most the oob we passed in
+	return int(n), len(oob[:msg.Controllen]), from, nil
+}
+
+// networkPort reads a port stored in network byte order
+func networkPort(p *uint16) uint16 {
+	b := (*[2]byte)(unsafe.Pointer(p))
+	return binary.BigEndian.Uint16(b[:])
 }
 
 // recvoob receives only OOB message from the socket

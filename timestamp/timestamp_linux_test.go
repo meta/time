@@ -216,6 +216,99 @@ func BenchmarkReadTimeStampSeqIDBuf(b *testing.B) {
 	}
 }
 
+func rxSocketPair(tb testing.TB, network string) (int, int, unix.Sockaddr) {
+	tb.Helper()
+	lo := "127.0.0.1"
+	if network == "udp6" {
+		lo = "::1"
+	}
+	conn, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(lo)})
+	require.NoError(tb, err)
+	tb.Cleanup(func() { conn.Close() })
+	connFd, err := ConnFd(conn)
+	require.NoError(tb, err)
+	require.NoError(tb, EnableSWTimestampsRx(connFd))
+	require.NoError(tb, unix.SetNonblock(connFd, false))
+	serverAddr, err := unix.Getsockname(connFd)
+	require.NoError(tb, err)
+
+	domain := unix.AF_INET
+	if network == "udp6" {
+		domain = unix.AF_INET6
+	}
+	clientFd, err := unix.Socket(domain, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { unix.Close(clientFd) })
+	require.NoError(tb, unix.Bind(clientFd, IPToSockaddr(net.ParseIP(lo), 0)))
+	return connFd, clientFd, serverAddr
+}
+
+func TestReadPacketWithCMsgAddrPort(t *testing.T) {
+	for _, network := range []string{"udp4", "udp6"} {
+		t.Run(network, func(t *testing.T) {
+			connFd, clientFd, serverAddr := rxSocketPair(t, network)
+			clientAddr, err := unix.Getsockname(clientFd)
+			require.NoError(t, err)
+			request := []byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 42}
+			buf := make([]byte, PayloadSizeBytes)
+			oob := make([]byte, ControlSizeBytes)
+			var rxTS time.Time
+			// resend until stamped: packets that arrive before the kernel turns RX stamping on carry no timestamp
+			require.Eventually(t, func() bool {
+				require.NoError(t, unix.Sendto(clientFd, request, 0, serverAddr))
+				n, oobn, from, err := ReadPacketWithCMsgAddrPort(connFd, buf, oob)
+				require.NoError(t, err)
+				require.Equal(t, request, buf[:n])
+				require.Equal(t, SockaddrToAddrPort(clientAddr), from)
+				rxTS, err = ReadRXTimestamp(oob, oobn)
+				return err == nil
+			}, time.Second, 10*time.Millisecond)
+			require.WithinDuration(t, time.Now(), rxTS, 10*time.Second)
+		})
+	}
+}
+
+// TestReadPacketWithCMsgAddrPortZeroAlloc keeps the per-DELAY_REQ receive allocation free
+func TestReadPacketWithCMsgAddrPortZeroAlloc(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	read := func(t *testing.T) {
+		require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
+		_, _, _, err := ReadPacketWithCMsgAddrPort(connFd, buf, oob)
+		require.NoError(t, err)
+	}
+	read(t)
+	t.Run("allocations", func(t *testing.T) {
+		if asanEnabled {
+			t.Skip("ASAN forces unsafe.Pointer conversions to allocate")
+		}
+		require.Zero(t, testing.AllocsPerRun(100, func() { read(t) }))
+	})
+}
+
+func BenchmarkReadPacketWithCMsgAddrPort(b *testing.B) {
+	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFd, buf[:44], 0, serverAddr)
+		_, _, _, _ = ReadPacketWithCMsgAddrPort(connFd, buf, oob)
+	}
+}
+
+func BenchmarkReadPacketWithCMsgBuf(b *testing.B) {
+	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFd, buf[:44], 0, serverAddr)
+		_, _, _, _ = ReadPacketWithCMsgBuf(connFd, buf, oob)
+	}
+}
+
 func Test_scmDataToTime(t *testing.T) {
 	hwData := []byte{
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
