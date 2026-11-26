@@ -20,6 +20,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"syscall"
 	"time"
@@ -236,11 +237,21 @@ func SeqIDSocketControlMessage(seqID uint32, soob []byte) {
 	binary.NativeEndian.PutUint32(data, seqID)
 }
 
-// pollFunc matches unix.Ppoll so tests can drive the EINTR restart path
-type pollFunc func(fds []unix.PollFd, timeout *unix.Timespec, sigmask *unix.Sigset_t) (int, error)
+// pollFunc waits for POLLERR on fd, so tests can drive the EINTR restart path.
+// It takes values, not pointers: arguments passed through a function value escape to the heap.
+type pollFunc func(fd int, timeout time.Duration) (int, error)
+
+func pollErr(fd int, timeout time.Duration) (int, error) {
+	if fd < 0 || fd > math.MaxInt32 {
+		return 0, unix.EBADF
+	}
+	fds := [1]unix.PollFd{{Fd: int32(fd), Events: unix.POLLERR}}
+	ts := unix.NsecToTimespec(timeout.Nanoseconds())
+	return unix.Ppoll(fds[:], &ts, nil)
+}
 
 func waitForHWTS(connFd int) error {
-	return pollForHWTS(connFd, unix.Ppoll)
+	return pollForHWTS(connFd, pollErr)
 }
 
 // pollForHWTS waits until the TX timestamp is ready, for at most TimeoutTXTS.
@@ -248,7 +259,6 @@ func waitForHWTS(connFd int) error {
 // passes anything negative to ppoll as "no timeout", so a lossy conversion there
 // would reintroduce the unbounded wait this deadline exists to prevent.
 func pollForHWTS(connFd int, poll pollFunc) error {
-	fds := []unix.PollFd{{Fd: int32(connFd), Events: unix.POLLERR, Revents: 0}} //nolint:gosec // fd is always small
 	// a restarted poll must share one deadline, otherwise every EINTR grants
 	// another full TimeoutTXTS and the caller's attempt budget bounds nothing
 	deadline := time.Now().Add(TimeoutTXTS)
@@ -257,8 +267,7 @@ func pollForHWTS(connFd int, poll pollFunc) error {
 		if remaining <= 0 {
 			return syscall.ETIMEDOUT
 		}
-		timeout := unix.NsecToTimespec(remaining.Nanoseconds())
-		n, err := poll(fds, &timeout, nil)
+		n, err := poll(connFd, remaining)
 		if errors.Is(err, syscall.EINTR) {
 			continue
 		}
@@ -280,7 +289,7 @@ func recvoob(connFd int, oob []byte) (oobn int, err error) {
 	var msg unix.Msghdr
 	msg.Control = &oob[0]
 	msg.SetControllen(len(oob))
-	_, _, e1 := unix.Syscall(unix.SYS_RECVMSG, uintptr(connFd), uintptr(unsafe.Pointer(&msg)), uintptr(unix.MSG_ERRQUEUE)) //nolint:gosec // fd is always small
+	_, _, e1 := unix.Syscall(unix.SYS_RECVMSG, uintptr(connFd), uintptr(unsafe.Pointer(&msg)), uintptr(unix.MSG_ERRQUEUE))
 	if e1 != 0 {
 		return 0, e1
 	}

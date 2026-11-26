@@ -18,8 +18,10 @@ package timestamp
 
 import (
 	"fmt"
+	"math"
 	"net"
 	"runtime"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -120,6 +122,16 @@ func TestWaitForHWTSReportsTimeout(t *testing.T) {
 	require.GreaterOrEqual(t, elapsed, TimeoutTXTS)
 }
 
+func TestPollErrRejectsFdOutsidePollFd(t *testing.T) {
+	_, err := pollErr(-1, time.Millisecond)
+	require.ErrorIs(t, err, unix.EBADF)
+	if strconv.IntSize == 64 {
+		tooBig := int64(math.MaxInt32) + 1
+		_, err = pollErr(int(tooBig), time.Millisecond)
+		require.ErrorIs(t, err, unix.EBADF)
+	}
+}
+
 func TestWaitForHWTSSharesOneDeadlineAcrossEINTR(t *testing.T) {
 	connFd := errQueueSocket(t)
 
@@ -132,8 +144,8 @@ func TestWaitForHWTSSharesOneDeadlineAcrossEINTR(t *testing.T) {
 	const interrupts = 100
 	const perCall = 10 * time.Millisecond
 	var budgets []time.Duration
-	poll := func(_ []unix.PollFd, timeout *unix.Timespec, _ *unix.Sigset_t) (int, error) {
-		budgets = append(budgets, time.Duration(timeout.Nano()))
+	poll := func(_ int, timeout time.Duration) (int, error) {
+		budgets = append(budgets, timeout)
 		time.Sleep(perCall)
 		if len(budgets) >= interrupts {
 			return 0, nil
@@ -148,6 +160,59 @@ func TestWaitForHWTSSharesOneDeadlineAcrossEINTR(t *testing.T) {
 	require.LessOrEqual(t, budgets[0], TimeoutTXTS)
 	for i := 1; i < len(budgets); i++ {
 		require.Less(t, budgets[i], budgets[i-1])
+	}
+}
+
+// txTimestampSocket returns a socket with one SW TX timestamp per send, tagged with OPT_ID like ptp4u's
+func txTimestampSocket(tb testing.TB) (int, unix.Sockaddr) {
+	tb.Helper()
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { unix.Close(fd) })
+	require.NoError(tb, unix.Bind(fd, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}))
+	flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE | unix.SOF_TIMESTAMPING_SOFTWARE |
+		unix.SOF_TIMESTAMPING_OPT_ID | unix.SOF_TIMESTAMPING_OPT_TSONLY
+	require.NoError(tb, unix.SetsockoptInt(fd, unix.SOL_SOCKET, timestamping, flags))
+	require.NoError(tb, unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SELECT_ERR_QUEUE, 1))
+	// sending to ourselves keeps the receive queue drained by the test, not the kernel
+	sa, err := unix.Getsockname(fd)
+	require.NoError(tb, err)
+	return fd, sa
+}
+
+// TestReadTimeStampSeqIDBufZeroAlloc keeps the per-Sync TX timestamp read allocation free
+func TestReadTimeStampSeqIDBufZeroAlloc(t *testing.T) {
+	fd, sa := txTimestampSocket(t)
+	toob := make([]byte, ControlSizeBytes)
+	buf := make([]byte, 64)
+	var seq uint32
+	read := func(t *testing.T) {
+		require.NoError(t, unix.Sendto(fd, buf[:1], 0, sa))
+		_, _, err := ReadTimeStampSeqIDBuf(fd, toob, seq)
+		require.NoError(t, err)
+		_, _ = unix.Read(fd, buf)
+		seq++
+	}
+	read(t)
+	t.Run("allocations", func(t *testing.T) {
+		if asanEnabled {
+			t.Skip("ASAN forces unsafe.Pointer conversions to allocate")
+		}
+		require.Zero(t, testing.AllocsPerRun(100, func() { read(t) }))
+	})
+}
+
+func BenchmarkReadTimeStampSeqIDBuf(b *testing.B) {
+	fd, sa := txTimestampSocket(b)
+	toob := make([]byte, ControlSizeBytes)
+	buf := make([]byte, 64)
+	var seq uint32
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(fd, buf[:1], 0, sa)
+		_, _, _ = ReadTimeStampSeqIDBuf(fd, toob, seq)
+		_, _ = unix.Read(fd, buf)
+		seq++
 	}
 }
 
