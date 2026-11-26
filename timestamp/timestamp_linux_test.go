@@ -268,6 +268,32 @@ func TestReadPacketWithCMsgAddrPort(t *testing.T) {
 	}
 }
 
+// general messages are read without control messages
+func TestReadPacketWithCMsgAddrPortNoOOB(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp4")
+	clientAddr, err := unix.Getsockname(clientFd)
+	require.NoError(t, err)
+	buf := make([]byte, PayloadSizeBytes)
+
+	require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
+	n, oobn, from, err := ReadPacketWithCMsgAddrPort(connFd, buf, nil)
+	require.NoError(t, err)
+	require.Equal(t, 44, n)
+	require.Zero(t, oobn)
+	require.Equal(t, SockaddrToAddrPort(clientAddr), from)
+
+	t.Run("allocations", func(t *testing.T) {
+		if asanEnabled {
+			t.Skip("ASAN forces unsafe.Pointer conversions to allocate")
+		}
+		require.Zero(t, testing.AllocsPerRun(100, func() {
+			require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
+			_, _, _, err := ReadPacketWithCMsgAddrPort(connFd, buf, nil)
+			require.NoError(t, err)
+		}))
+	})
+}
+
 // TestReadPacketWithCMsgAddrPortZeroAlloc keeps the per-DELAY_REQ receive allocation free
 func TestReadPacketWithCMsgAddrPortZeroAlloc(t *testing.T) {
 	connFd, clientFd, serverAddr := rxSocketPair(t, "udp6")
@@ -597,8 +623,43 @@ func TestReadPacketWithRXTimestamp(t *testing.T) {
 	data, returnaddr, nowKernelTimestamp, err := ReadPacketWithRXTimestamp(connFd)
 	require.Equal(t, request, data, "We should have the same request arriving on the server")
 	require.Equal(t, time.Now().Unix()/10, nowKernelTimestamp.Unix()/10, "kernel timestamps should be within 10s")
-	requireEqualNetAddrSockAddr(t, cconn.LocalAddr(), returnaddr)
+	requireEqualNetAddrAddrPort(t, cconn.LocalAddr(), returnaddr)
 	require.NoError(t, err)
+}
+
+// TestReadPacketWithRXTimestampBufZeroAlloc keeps the per-request NTP receive allocation free
+func TestReadPacketWithRXTimestampBufZeroAlloc(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	read := func(t *testing.T) {
+		require.NoError(t, unix.Sendto(clientFd, buf[:48], 0, serverAddr))
+		_, _, _, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+		require.NoError(t, err)
+	}
+	// resend until stamped: packets that arrive before the kernel turns RX stamping on carry no timestamp
+	require.Eventually(t, func() bool {
+		require.NoError(t, unix.Sendto(clientFd, buf[:48], 0, serverAddr))
+		_, _, _, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+	t.Run("allocations", func(t *testing.T) {
+		if asanEnabled {
+			t.Skip("ASAN forces unsafe.Pointer conversions to allocate")
+		}
+		require.Zero(t, testing.AllocsPerRun(100, func() { read(t) }))
+	})
+}
+
+func BenchmarkReadPacketWithRXTimestampBuf(b *testing.B) {
+	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFd, buf[:48], 0, serverAddr)
+		_, _, _, _ = ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+	}
 }
 
 func TestReadPacketWithRXTXTimestamp(t *testing.T) {
@@ -632,7 +693,7 @@ func TestReadPacketWithRXTXTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, request, data, "We should have the same request arriving on the server")
 	require.Equal(t, time.Now().Unix()/10, nowKernelTimestamp.Unix()/10, "kernel timestamps should be within 10s")
-	requireEqualNetAddrSockAddr(t, cconn.LocalAddr(), returnaddr)
+	requireEqualNetAddrAddrPort(t, cconn.LocalAddr(), returnaddr)
 
 	// send packet and read TX timestamp
 	_, err = conn.WriteTo(request, cconn.LocalAddr())

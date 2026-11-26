@@ -507,8 +507,7 @@ func TestServeNTSStatsRouting(t *testing.T) {
 	defer conn.Close()
 	connFd, err := timestamp.ConnFd(conn)
 	require.NoError(t, err)
-	localAddr := conn.LocalAddr().(*net.UDPAddr)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), localAddr.Port)
+	sa := conn.LocalAddr().(*net.UDPAddr).AddrPort()
 
 	validRequest := func(t *testing.T) (ntske.Keystore, *ntp.Packet) {
 		t.Helper()
@@ -611,7 +610,7 @@ func TestServeNTSStatsRouting(t *testing.T) {
 			ks, req := tc.build(t)
 			js := &stats.JSONStats{}
 			tsk := task{connFd: connFd, addr: sa, received: time.Now(), request: req, keystore: ks, stats: js}
-			tsk.serve(&ntp.Packet{}, 0)
+			tsk.serve(&ntp.Packet{}, &timestamp.SockaddrBuf{}, 0)
 
 			counters := js.ToMap()
 			require.Equal(t, tc.wantOK, counters["nts_auth_ok"], "nts_auth_ok")

@@ -26,17 +26,8 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func requireEqualNetAddrSockAddr(t *testing.T, n net.Addr, s unix.Sockaddr) {
-	uaddr := n.(*net.UDPAddr)
-	saddr6, ok := s.(*unix.SockaddrInet6)
-	if ok {
-		require.Equal(t, uaddr.IP.To16(), net.IP(saddr6.Addr[:]))
-		require.Equal(t, uaddr.Port, saddr6.Port)
-		return
-	}
-	saddr4 := s.(*unix.SockaddrInet4)
-	require.Equal(t, uaddr.IP.To4(), net.IP(saddr4.Addr[:]))
-	require.Equal(t, uaddr.Port, saddr4.Port)
+func requireEqualNetAddrAddrPort(t *testing.T, n net.Addr, from netip.AddrPort) {
+	require.Equal(t, n.(*net.UDPAddr).AddrPort(), netip.AddrPortFrom(from.Addr().Unmap(), from.Port()))
 }
 
 func TestConnFd(t *testing.T) {
@@ -85,18 +76,6 @@ func TestAddrToSockaddr(t *testing.T) {
 	require.Equal(t, expectedSA6, sa6)
 }
 
-func TestSockaddrToIP(t *testing.T) {
-	ip4 := net.ParseIP("127.0.0.1")
-	ip6 := net.ParseIP("::1")
-	port := 123
-
-	sa4 := IPToSockaddr(ip4, port)
-	sa6 := IPToSockaddr(ip6, port)
-
-	require.Equal(t, ip4.String(), SockaddrToIP(sa4).String())
-	require.Equal(t, ip6.String(), SockaddrToIP(sa6).String())
-}
-
 func TestSockaddrToPort(t *testing.T) {
 	ip4 := net.ParseIP("127.0.0.1")
 	ip6 := net.ParseIP("::1")
@@ -119,8 +98,37 @@ func TestSockaddrToAddrPort(t *testing.T) {
 
 	linkLocal := SockaddrToAddrPort(&unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7})
 	require.Equal(t, netip.MustParseAddrPort("[fe80::1%7]:319"), linkLocal)
-	require.Equal(t, uint32(7), ScopeID(linkLocal.Addr()))
-	require.Zero(t, ScopeID(netip.MustParseAddr("::1")))
+}
+
+func TestSockaddrBuf(t *testing.T) {
+	var b SockaddrBuf
+	require.Equal(t, &unix.SockaddrInet4{Addr: [4]byte{10, 0, 0, 1}, Port: 319}, b.Sockaddr(netip.MustParseAddrPort("10.0.0.1:319")))
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 320}, b.Sockaddr(netip.MustParseAddrPort("[::1]:320")))
+	// a link-local client is only reachable through the interface it came from
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7}, b.Sockaddr(netip.MustParseAddrPort("[fe80::1%7]:319")))
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 319}, b.Sockaddr(netip.MustParseAddrPort("[::1]:319")), "zone must not leak into the next destination")
+	// a scope round-trips through a read and a reply
+	sa := &unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7}
+	require.Equal(t, sa, b.Sockaddr(SockaddrToAddrPort(sa)))
+}
+
+func TestSockaddrBufZeroAlloc(t *testing.T) {
+	var b SockaddrBuf
+	addrs := []netip.AddrPort{netip.MustParseAddrPort("10.0.0.1:319"), netip.MustParseAddrPort("[fe80::1%7]:320")}
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		for _, a := range addrs {
+			_ = b.Sockaddr(a)
+		}
+	}))
+}
+
+func BenchmarkSockaddrBuf(b *testing.B) {
+	var buf SockaddrBuf
+	addr := netip.MustParseAddrPort("[2001:db8::1]:319")
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = buf.Sockaddr(addr)
+	}
 }
 
 func TestTimestampUnmarshalText(t *testing.T) {

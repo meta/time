@@ -148,37 +148,37 @@ func ConnFd(conn *net.UDPConn) (int, error) {
 }
 
 // ReadPacketWithRXTimestamp returns byte packet and HW RX timestamp
-func ReadPacketWithRXTimestamp(connFd int) ([]byte, unix.Sockaddr, time.Time, error) {
+func ReadPacketWithRXTimestamp(connFd int) ([]byte, netip.AddrPort, time.Time, error) {
 	// Accessing hw timestamp
 	buf := make([]byte, PayloadSizeBytes)
 	oob := make([]byte, ControlSizeBytes)
 
-	bbuf, sa, t, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+	bbuf, from, t, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
 	if err != nil {
-		return nil, nil, time.Time{}, err
+		return nil, netip.AddrPort{}, time.Time{}, err
 	}
-	return buf[:bbuf], sa, t, nil
+	return buf[:bbuf], from, t, nil
 }
 
 // ReadPacketWithRXTimestampBuf writes byte packet into provide buffer buf, and returns number of bytes copied to the buffer, client ip and HW RX timestamp.
-// oob buffer can be reaused after ReadPacketWithRXTimestampBuf call.
-func ReadPacketWithRXTimestampBuf(connFd int, buf, oob []byte) (int, unix.Sockaddr, time.Time, error) {
-	bbuf, boob, _, saddr, err := unix.Recvmsg(connFd, buf, oob, 0)
+// oob buffer can be reaused after ReadPacketWithRXTimestampBuf call. Reading a packet does not allocate.
+func ReadPacketWithRXTimestampBuf(connFd int, buf, oob []byte) (int, netip.AddrPort, time.Time, error) {
+	bbuf, boob, from, err := recvmsgAddrPort(connFd, buf, oob)
 	if err != nil {
-		return 0, nil, time.Time{}, fmt.Errorf("failed to read timestamp: %w", err)
+		return 0, netip.AddrPort{}, time.Time{}, fmt.Errorf("failed to read timestamp: %w", err)
 	}
 
 	timestamp, err := socketControlMessageTimestamp(oob, boob)
 	if errors.Is(err, ErrNoTimestamp) {
 		dst, dstErr := socketControlMessageDstAddr(oob, boob)
 		if dstErr == nil && dst.IsMulticast() {
-			return 0, nil, time.Time{}, ErrNoTimestampForMulticastPkt
+			return 0, netip.AddrPort{}, time.Time{}, ErrNoTimestampForMulticastPkt
 		}
 	}
 	if err != nil {
-		return 0, nil, time.Time{}, err
+		return 0, netip.AddrPort{}, time.Time{}, err
 	}
-	return bbuf, saddr, timestamp, nil
+	return bbuf, from, timestamp, nil
 }
 
 // ReadPacketWithCMsgBuf writes byte packet into provided packet and cmsg buffer, and returns number of bytes copied to the buffers
@@ -231,18 +231,6 @@ func AddrToSockaddr(ip netip.Addr, port int) unix.Sockaddr {
 	return &unix.SockaddrInet6{Port: port, Addr: ip.As16()}
 }
 
-// SockaddrToIP converts socket address to an IP
-// Somewhat copy from https://github.com/golang/go/blob/658b5e66ecbc41a49e6fb5aa63c5d9c804cf305f/src/net/udpsock_posix.go#L15
-func SockaddrToIP(sa unix.Sockaddr) net.IP {
-	switch sa := sa.(type) {
-	case *unix.SockaddrInet4:
-		return sa.Addr[0:]
-	case *unix.SockaddrInet6:
-		return sa.Addr[0:]
-	}
-	return nil
-}
-
 // SockaddrToAddr converts socket address to a netip.Addr
 // Somewhat copy from https://github.com/golang/go/blob/658b5e66ecbc41a49e6fb5aa63c5d9c804cf305f/src/net/udpsock_posix.go#L15
 func SockaddrToAddr(sa unix.Sockaddr) netip.Addr {
@@ -280,14 +268,32 @@ func addrFrom16(ip [16]byte, scope uint32) netip.Addr {
 	return addr.WithZone(strconv.FormatUint(uint64(scope), 10))
 }
 
-// ScopeID returns the IPv6 scope of an address read by ReadPacketWithCMsgAddrPort, or 0 if it has none
-func ScopeID(addr netip.Addr) uint32 {
+// scopeID returns the IPv6 scope kept by addrFrom16, or 0 if addr has none
+func scopeID(addr netip.Addr) uint32 {
 	zone := addr.Zone()
 	if zone == "" {
 		return 0
 	}
 	id, _ := strconv.ParseUint(zone, 10, 32)
 	return uint32(id)
+}
+
+// SockaddrBuf converts addresses to a unix.Sockaddr without allocating. It holds one destination
+// per address family, so a returned Sockaddr is only valid until the next call.
+type SockaddrBuf struct {
+	in4 unix.SockaddrInet4
+	in6 unix.SockaddrInet6
+}
+
+// Sockaddr returns addr as a unix.Sockaddr, keeping the scope of a link-local address
+func (b *SockaddrBuf) Sockaddr(addr netip.AddrPort) unix.Sockaddr {
+	ip := addr.Addr()
+	if ip.Is4() {
+		b.in4 = unix.SockaddrInet4{Addr: ip.As4(), Port: int(addr.Port())}
+		return &b.in4
+	}
+	b.in6 = unix.SockaddrInet6{Addr: ip.As16(), Port: int(addr.Port()), ZoneId: scopeID(ip)}
+	return &b.in6
 }
 
 // SockaddrToPort converts socket address to an IP

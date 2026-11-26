@@ -278,7 +278,7 @@ func (c *Client) setup(ctx context.Context, eg *errgroup.Group) error {
 					return
 				}
 				log.Debugf("got packet on port 319, addr = %v", addr)
-				if !timestamp.SockaddrToIP(addr).Equal(eventAddr.IP) {
+				if !net.IP(addr.Addr().AsSlice()).Equal(eventAddr.IP) {
 					log.Warningf("ignoring packets from server %v", addr)
 				}
 				c.inChan <- &inPacket{data: response, ts: rxtx}
