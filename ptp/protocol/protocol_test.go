@@ -386,9 +386,22 @@ func TestFoundFuzzResults(t *testing.T) {
 func BenchmarkReadSyncDelay(b *testing.B) {
 	raw := []byte{1, 18, 0, 50, 0, 0, 36, 0, 0, 0, 0, 0, 6, 32, 0, 2, 0, 0, 0, 0, 184, 206, 246, 255, 254, 68, 148, 144, 0, 1, 149, 17, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 7, 0, 2, 16, 146, 0, 0}
 	p := &SyncDelayReq{}
-	for n := 0; n < b.N; n++ {
+	b.ReportAllocs()
+	for b.Loop() {
+		p.TLVs = p.TLVs[:0]
 		_ = p.UnmarshalBinary(raw)
 	}
+}
+
+// TestReadSyncDelayReuseZeroAlloc keeps decoding an SPTP DELAY_REQ (with AlternateResponsePortTLV) into a reused packet allocation free
+func TestReadSyncDelayReuseZeroAlloc(t *testing.T) {
+	raw := []byte{1, 18, 0, 50, 0, 0, 36, 0, 0, 0, 0, 0, 6, 32, 0, 2, 0, 0, 0, 0, 184, 206, 246, 255, 254, 68, 148, 144, 0, 1, 149, 17, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 7, 0, 2, 16, 146, 0, 0}
+	p := &SyncDelayReq{}
+	require.NoError(t, p.UnmarshalBinary(raw))
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		p.TLVs = p.TLVs[:0]
+		_ = p.UnmarshalBinary(raw)
+	}))
 }
 
 func BenchmarkWriteSync(b *testing.B) {

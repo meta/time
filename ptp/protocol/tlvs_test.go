@@ -294,6 +294,28 @@ func TestParseSyncDelayReqWithAlternateResponsePort(t *testing.T) {
 	require.Equal(t, &want, pp)
 }
 
+func TestParseSyncDelayReqReusesAlternateResponsePort(t *testing.T) {
+	raw := []byte{1, 18, 0, 50, 0, 0, 36, 0, 0, 0, 0, 0, 6, 32, 0, 2, 0, 0, 0, 0, 184, 206, 246, 255, 254, 68, 148, 144, 0, 1, 149, 17, 0, 127, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 32, 7, 0, 2, 16, 146, 0, 0}
+	p := &SyncDelayReq{}
+	require.NoError(t, p.UnmarshalBinary(raw))
+	first := p.TLVs[0].(*AlternateResponsePortTLV)
+
+	moved := slices.Clone(raw)
+	moved[49] = 1 // offset 4242 -> 4097
+	p.TLVs = p.TLVs[:0]
+	require.NoError(t, p.UnmarshalBinary(moved))
+	require.Len(t, p.TLVs, 1)
+	require.Same(t, first, p.TLVs[0], "a truncated slice must reuse the TLV of the previous read")
+	require.Equal(t, uint16(4097), first.Offset)
+
+	// a different TLV type in the slot is never reused or modified
+	other := &CancelUnicastTransmissionTLV{}
+	p.TLVs = []TLV{other}[:0]
+	require.NoError(t, p.UnmarshalBinary(raw))
+	require.Equal(t, uint16(4242), p.TLVs[0].(*AlternateResponsePortTLV).Offset)
+	require.Equal(t, &CancelUnicastTransmissionTLV{}, other)
+}
+
 func TestCheckTLVBufferSize(t *testing.T) {
 	tests := []struct {
 		name    string

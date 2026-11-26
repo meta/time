@@ -113,8 +113,16 @@ func writeTLVs(tlvs []TLV, b []byte) (int, error) {
 	return pos, nil
 }
 
-// readTLVs reads TLVs from the bytes.
-// tlvs is passed to save on allocations and it's user's task to ensure it's empty
+// reusableTLV returns the TLV past the end of tlvs that a caller truncating with tlvs[:0] left behind, or nil
+func reusableTLV(tlvs []TLV) TLV {
+	if len(tlvs) == cap(tlvs) {
+		return nil
+	}
+	return tlvs[:len(tlvs)+1][len(tlvs)]
+}
+
+// readTLVs reads TLVs from the bytes into tlvs, which the caller must pass empty to save on allocations.
+// A caller truncating with tlvs[:0] must not keep the previous TLVs: a reused AlternateResponsePortTLV is overwritten.
 func readTLVs(tlvs []TLV, maxLength int, b []byte) ([]TLV, error) {
 	pos := 0
 	var tlvType TLVType
@@ -165,7 +173,11 @@ func readTLVs(tlvs []TLV, maxLength int, b []byte) ([]TLV, error) {
 			tlvs = append(tlvs, tlv)
 			pos += tlvHeadSize + int(tlv.LengthField)
 		case TLVAlternateResponsePort:
-			tlv := &AlternateResponsePortTLV{}
+			// reuse the TLV left in the slice by the previous read, as SPTP clients send it in every DELAY_REQ
+			tlv, _ := reusableTLV(tlvs).(*AlternateResponsePortTLV)
+			if tlv == nil {
+				tlv = &AlternateResponsePortTLV{}
+			}
 			if err := tlv.UnmarshalBinary(b[pos:]); err != nil {
 				return tlvs, err
 			}
