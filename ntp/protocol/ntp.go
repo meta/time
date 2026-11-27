@@ -37,10 +37,17 @@ func Time(t time.Time) (seconds uint32, fractions uint32) {
 	return uint32(sec), uint32((nsec - sec*time.Second.Nanoseconds()) << 32 / time.Second.Nanoseconds())
 }
 
-// Unix is converting NTP seconds and fractions into Unix time
+// Unix is converting NTP seconds and fractions into Unix time.
+// As described in RFC 4330 section 3, seconds with the most significant bit
+// set are in NTP era 0 (1968-2036), and seconds with it unset are in era 1
+// (2036-2104), since the 32-bit seconds field wraps on 2036-02-07.
 func Unix(seconds, fractions uint32) time.Time {
 	secs := int64(seconds) - NanosecondsToUnix/time.Second.Nanoseconds()
-	nanos := (int64(fractions) * time.Second.Nanoseconds()) >> 32 // convert fractional to nanos
+	if seconds&(1<<31) == 0 {
+		secs += 1 << 32
+	}
+	// convert fractional to nanos, rounding to the nearest nanosecond so that Unix(Time(t)) == t
+	nanos := (int64(fractions)*time.Second.Nanoseconds() + 1<<31) >> 32
 	return time.Unix(secs, nanos)
 }
 

@@ -445,8 +445,7 @@ func TestUnix(t *testing.T) {
 	testtime := Unix(nsec, nfrac)
 
 	require.Equal(t, usec, testtime.Unix())
-	// +1ns is a rounding issue
-	require.Equal(t, unsec, int64(testtime.Nanosecond())+1)
+	require.Equal(t, unsec, int64(testtime.Nanosecond()))
 }
 
 func TestRoundTripDelay(t *testing.T) {
@@ -534,6 +533,20 @@ func TestOffsetAsymmetricNetwork(t *testing.T) {
 
 	actualOffset := Offset(originTime, serverReceiveTime, serverTransmitTime, clientReceiveTime)
 	require.Equal(t, offset, actualOffset)
+}
+
+func TestUnixTimeRoundTrip(t *testing.T) {
+	for _, tm := range []time.Time{
+		time.Date(2026, 11, 27, 0, 0, 0, 123456789, time.UTC),
+		time.Date(2036, 2, 7, 6, 28, 15, 999999999, time.UTC),
+		// The 32-bit NTP seconds field wraps here (NTP era 1)
+		time.Date(2036, 2, 7, 6, 28, 16, 0, time.UTC),
+		time.Date(2040, 1, 1, 0, 0, 0, 500000000, time.UTC),
+		time.Date(1970, 1, 1, 0, 0, 0, 1, time.UTC),
+	} {
+		sec, frac := Time(tm)
+		require.True(t, tm.Equal(Unix(sec, frac)), "%v round-tripped to %v", tm, Unix(sec, frac).UTC())
+	}
 }
 
 func TestCorrectTime(t *testing.T) {
