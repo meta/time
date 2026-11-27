@@ -246,6 +246,21 @@ func TestReadPacketWithCMsgAddrPort(t *testing.T) {
 	}
 }
 
+// general messages are read without control messages
+func TestReadPacketWithCMsgAddrPortNoOOB(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp4")
+	clientAddr, err := unix.Getsockname(clientFd)
+	require.NoError(t, err)
+	buf := make([]byte, PayloadSizeBytes)
+
+	require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
+	n, oobn, from, err := ReadPacketWithCMsgAddrPort(connFd, buf, nil)
+	require.NoError(t, err)
+	require.Equal(t, 44, n)
+	require.Zero(t, oobn)
+	require.Equal(t, SockaddrToAddrPort(clientAddr), from)
+}
+
 func BenchmarkReadPacketWithCMsgAddrPort(b *testing.B) {
 	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
 	buf := make([]byte, PayloadSizeBytes)
@@ -556,8 +571,19 @@ func TestReadPacketWithRXTimestamp(t *testing.T) {
 	data, returnaddr, nowKernelTimestamp, err := ReadPacketWithRXTimestamp(connFd)
 	require.Equal(t, request, data, "We should have the same request arriving on the server")
 	require.Equal(t, time.Now().Unix()/10, nowKernelTimestamp.Unix()/10, "kernel timestamps should be within 10s")
-	requireEqualNetAddrSockAddr(t, cconn.LocalAddr(), returnaddr)
+	requireEqualNetAddrAddrPort(t, cconn.LocalAddr(), returnaddr)
 	require.NoError(t, err)
+}
+
+func BenchmarkReadPacketWithRXTimestampBuf(b *testing.B) {
+	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFd, buf[:48], 0, serverAddr)
+		_, _, _, _ = ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+	}
 }
 
 func TestReadPacketWithRXTXTimestamp(t *testing.T) {
@@ -591,7 +617,7 @@ func TestReadPacketWithRXTXTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, request, data, "We should have the same request arriving on the server")
 	require.Equal(t, time.Now().Unix()/10, nowKernelTimestamp.Unix()/10, "kernel timestamps should be within 10s")
-	requireEqualNetAddrSockAddr(t, cconn.LocalAddr(), returnaddr)
+	requireEqualNetAddrAddrPort(t, cconn.LocalAddr(), returnaddr)
 
 	// send packet and read TX timestamp
 	_, err = conn.WriteTo(request, cconn.LocalAddr())

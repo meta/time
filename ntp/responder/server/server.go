@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sync/atomic"
 	"time"
 
@@ -48,7 +49,7 @@ var announceInterval = 30 * time.Second
 // task is a data structure with everything needed to work independently on NTP packet.
 type task struct {
 	connFd   int
-	addr     unix.Sockaddr
+	addr     netip.AddrPort
 	received time.Time
 	request  *ntp.Packet
 	keystore ntske.Keystore
@@ -264,17 +265,18 @@ func (s *Server) startWorker() {
 
 	// Pre-allocating response buffer
 	response := &ntp.Packet{}
+	var dst timestamp.SockaddrBuf
 	s.fillStaticHeaders(response)
 	s.Stats.IncWorkers()
 	for {
 		t := <-s.tasks
-		t.serve(response, s.Config.ExtraOffset)
+		t.serve(response, &dst, s.Config.ExtraOffset)
 	}
 }
 
 // serve checks the request format
 // gets time from local and respond.
-func (t *task) serve(response *ntp.Packet, extraoffset time.Duration) {
+func (t *task) serve(response *ntp.Packet, dst *timestamp.SockaddrBuf, extraoffset time.Duration) {
 	log.Debugf("Received request: %+v", t.request)
 	if !t.request.ValidSettingsFormat() {
 		log.Debugf("Invalid query, discarding: %v", t.request)
@@ -315,7 +317,7 @@ func (t *task) serve(response *ntp.Packet, extraoffset time.Duration) {
 		return
 	}
 	log.Debugf("Writing %d-byte response", len(responseBytes))
-	if err := unix.Sendto(t.connFd, responseBytes, unix.MSG_DONTWAIT, t.addr); err != nil {
+	if err := unix.Sendto(t.connFd, responseBytes, unix.MSG_DONTWAIT, dst.Sockaddr(t.addr)); err != nil {
 		log.Debugf("Failed to respond to the request: %v", err)
 		return
 	}

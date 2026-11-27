@@ -262,15 +262,6 @@ func (s *Server) startGeneralListener() {
 	<-fail
 }
 
-func readPacketBuf(connFd int, buf []byte) (int, netip.AddrPort, error) {
-	n, saddr, err := unix.Recvfrom(connFd, buf, 0)
-	if err != nil {
-		return 0, netip.AddrPort{}, err
-	}
-
-	return n, timestamp.SockaddrToAddrPort(saddr), nil
-}
-
 // withPort returns addr with its port replaced by one of the PTP ports
 func withPort(addr netip.AddrPort, port int) netip.AddrPort {
 	if port < 0 || port > math.MaxUint16 {
@@ -411,7 +402,7 @@ func (s *Server) handleGeneralMessages(gFd int) {
 	}
 
 	for {
-		bbuf, gaddr, err := readPacketBuf(gFd, buf)
+		bbuf, _, gaddr, err := timestamp.ReadPacketWithCMsgAddrPort(gFd, buf, nil)
 		if err != nil {
 			log.Errorf("Failed to read packet on %s: %v", localSockAddr, err)
 			continue

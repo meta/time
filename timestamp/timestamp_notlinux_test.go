@@ -115,5 +115,5 @@ func TestReadPacketWithRXTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, request, data, "We should have the same request arriving on the server")
 	require.Equal(t, time.Now().Unix()/10, nowKernelTimestamp.Unix()/10, "kernel timestamps should be within 10s")
-	requireEqualNetAddrSockAddr(t, cconn.LocalAddr(), returnaddr)
+	requireEqualNetAddrAddrPort(t, cconn.LocalAddr(), returnaddr)
 }

@@ -20,6 +20,7 @@ package timestamp
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -50,6 +51,35 @@ func TestReadPacketWithCMsgAddrPortZeroAlloc(t *testing.T) {
 	require.Zero(t, testing.AllocsPerRun(100, func() {
 		require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
 		_, _, _, err := ReadPacketWithCMsgAddrPort(connFd, buf, oob)
+		require.NoError(t, err)
+	}))
+}
+
+// TestReadPacketWithCMsgAddrPortNoOOBZeroAlloc keeps the general-port receive allocation free
+func TestReadPacketWithCMsgAddrPortNoOOBZeroAlloc(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp4")
+	buf := make([]byte, PayloadSizeBytes)
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, serverAddr))
+		_, _, _, err := ReadPacketWithCMsgAddrPort(connFd, buf, nil)
+		require.NoError(t, err)
+	}))
+}
+
+// TestReadPacketWithRXTimestampBufZeroAlloc keeps the per-request NTP receive allocation free
+func TestReadPacketWithRXTimestampBufZeroAlloc(t *testing.T) {
+	connFd, clientFd, serverAddr := rxSocketPair(t, "udp6")
+	buf := make([]byte, PayloadSizeBytes)
+	oob := make([]byte, ControlSizeBytes)
+	// resend until stamped: packets that arrive before the kernel turns RX stamping on carry no timestamp
+	require.Eventually(t, func() bool {
+		require.NoError(t, unix.Sendto(clientFd, buf[:48], 0, serverAddr))
+		_, _, _, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
+		return err == nil
+	}, time.Second, 10*time.Millisecond)
+	require.Zero(t, testing.AllocsPerRun(100, func() {
+		require.NoError(t, unix.Sendto(clientFd, buf[:48], 0, serverAddr))
+		_, _, _, err := ReadPacketWithRXTimestampBuf(connFd, buf, oob)
 		require.NoError(t, err)
 	}))
 }

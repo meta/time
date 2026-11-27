@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -157,7 +158,7 @@ func TestWorker(t *testing.T) {
 	connFd, err := timestamp.ConnFd(conn)
 	require.NoError(t, err)
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 0)
+	sa := netip.MustParseAddrPort("127.0.0.1:0")
 
 	go s.startWorker()
 	time.Sleep(100 * time.Millisecond)

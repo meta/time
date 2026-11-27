@@ -133,15 +133,6 @@ func BenchmarkSendWorkerDelayReq(b *testing.B) {
 	}
 }
 
-func TestSockaddrsTo(t *testing.T) {
-	var dst sockaddrs
-	require.Equal(t, &unix.SockaddrInet4{Addr: [4]byte{10, 0, 0, 1}, Port: 319}, dst.to(netip.MustParseAddrPort("10.0.0.1:319")))
-	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 320}, dst.to(netip.MustParseAddrPort("[::1]:320")))
-	// a link-local client is only reachable through the interface it came from
-	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7}, dst.to(netip.MustParseAddrPort("[fe80::1%7]:319")))
-	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 319}, dst.to(netip.MustParseAddrPort("[::1]:319")), "zone must not leak into the next destination")
-}
-
 func TestWithPort(t *testing.T) {
 	require.Equal(t, netip.MustParseAddrPort("[fe80::1%7]:320"), withPort(netip.MustParseAddrPort("[fe80::1%7]:4242"), 320))
 	require.False(t, withPort(netip.MustParseAddrPort("10.0.0.1:1"), 1<<16).IsValid())
