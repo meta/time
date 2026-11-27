@@ -23,7 +23,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"math"
 	"net"
+	"net/netip"
 	"os"
 	"os/signal"
 	"time"
@@ -260,13 +262,21 @@ func (s *Server) startGeneralListener() {
 	<-fail
 }
 
-func readPacketBuf(connFd int, buf []byte) (int, unix.Sockaddr, error) {
+func readPacketBuf(connFd int, buf []byte) (int, netip.AddrPort, error) {
 	n, saddr, err := unix.Recvfrom(connFd, buf, 0)
 	if err != nil {
-		return 0, nil, err
+		return 0, netip.AddrPort{}, err
 	}
 
-	return n, saddr, nil
+	return n, timestamp.SockaddrToAddrPort(saddr), nil
+}
+
+// withPort returns addr with its port replaced by one of the PTP ports
+func withPort(addr netip.AddrPort, port int) netip.AddrPort {
+	if port < 0 || port > math.MaxUint16 {
+		return netip.AddrPort{}
+	}
+	return netip.AddrPortFrom(addr.Addr(), uint16(port))
 }
 
 // handleEventMessages is a handler which processes Event Messages in the loop
@@ -277,7 +287,7 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 	var msgType ptp.MessageType
 	var worker *sendWorker
 	var sc *SubscriptionClient
-	var gclisa unix.Sockaddr
+	var gaddr netip.AddrPort
 	var expire time.Time
 	var workerOffset uint64
 
@@ -286,7 +296,7 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 		log.Errorf("unable to find local ip: %v", err)
 	}
 	for {
-		bbuf, boob, eclisa, err := timestamp.ReadPacketWithCMsgBuf(eFD, buf, oob)
+		bbuf, boob, eaddr, err := timestamp.ReadPacketWithCMsgAddrPort(eFD, buf, oob)
 		if err != nil {
 			log.Errorf("Failed to read packet on %s: %v", localSockAddr, err)
 			continue
@@ -349,20 +359,20 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 					}
 					// if the port number is > 10, it's a ptping request which expects announce to come to the same ephemeral port
 					if dReq.SourcePortIdentity.PortNumber > 10 {
-						gclisa = eclisa
+						gaddr = eaddr
 					} else {
-						gclisa = timestamp.NewSockaddrWithPort(eclisa, ptp.PortGeneral)
+						gaddr = withPort(eaddr, ptp.PortGeneral)
 					}
 					// Create a new subscription
-					sc = NewSubscriptionClient(worker.queue, worker.signalingQueue, eclisa, gclisa, ptp.MessageDelayReq, s.Config, subscriptionDuration, expire)
+					sc = NewSubscriptionClient(worker.queue, worker.signalingQueue, eaddr, gaddr, ptp.MessageDelayReq, s.Config, subscriptionDuration, expire)
 					home.RegisterSubscription(dReq.SourcePortIdentity, ptp.MessageDelayReq, sc)
 					go sc.Start(s.ctx)
 				} else {
 					// bump the subscription; sptp is stateless, port can change
-					sc.Bump(expire, eclisa)
+					sc.Bump(expire, eaddr)
 					// if the port number is > 10, it's a ptping request which expects announce to come to the same ephemeral port
 					if dReq.SourcePortIdentity.PortNumber > 10 {
-						sc.SetGclisa(eclisa)
+						sc.SetGaddr(eaddr)
 					}
 				}
 				sc.UpdateSyncDelayReq(rxTS, dReq.SequenceID)
@@ -370,7 +380,7 @@ func (s *Server) handleEventMessages(eFD, rworker int) {
 			} else {
 				// DELAY_RESPONSE
 				if sc = worker.FindSubscription(dReq.SourcePortIdentity, ptp.MessageDelayResp); sc == nil {
-					log.Infof("Delay request from %s is not in the subscription list", timestamp.SockaddrToIP(eclisa))
+					log.Infof("Delay request from %s is not in the subscription list", eaddr.Addr().Unmap())
 					continue
 				}
 				sc.UpdateDelayResp(&dReq.Header, rxTS)
@@ -401,7 +411,7 @@ func (s *Server) handleGeneralMessages(gFd int) {
 	}
 
 	for {
-		bbuf, gclisa, err := readPacketBuf(gFd, buf)
+		bbuf, gaddr, err := readPacketBuf(gFd, buf)
 		if err != nil {
 			log.Errorf("Failed to read packet on %s: %v", localSockAddr, err)
 			continue
@@ -436,9 +446,8 @@ func (s *Server) handleGeneralMessages(gFd int) {
 						worker = s.findWorker(signaling.SourcePortIdentity, 0)
 						sc = worker.FindSubscription(signaling.SourcePortIdentity, signalingType)
 						if sc == nil || !sc.Running() {
-							ip := timestamp.SockaddrToIP(gclisa)
-							eclisa := timestamp.IPToSockaddr(ip, ptp.PortEvent)
-							sc = NewSubscriptionClient(worker.queue, worker.signalingQueue, eclisa, gclisa, signalingType, s.Config, intervalt, expire)
+							eaddr := withPort(gaddr, ptp.PortEvent)
+							sc = NewSubscriptionClient(worker.queue, worker.signalingQueue, eaddr, gaddr, signalingType, s.Config, intervalt, expire)
 							worker.RegisterSubscription(signaling.SourcePortIdentity, signalingType, sc)
 						} else {
 							// Update existing subscription data
@@ -446,7 +455,7 @@ func (s *Server) handleGeneralMessages(gFd int) {
 							sc.SetInterval(intervalt)
 							// Update gclisa in case of renewal. This is against the standard,
 							// but we want to be able to respond to DelayResps coming from ephemeral ports
-							sc.SetGclisa(gclisa)
+							sc.SetGaddr(gaddr)
 						}
 
 						// Reject queries out of limit

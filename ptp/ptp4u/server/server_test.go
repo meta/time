@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/binary"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sync"
@@ -149,34 +150,33 @@ func TestDelayReqPtpingRefreshFollowsPort(t *testing.T) {
 
 	movedFD := loopbackSocket(t)
 	defer unix.Close(movedFD)
-	moved, err := unix.Getsockname(movedFD)
+	movedSA, err := unix.Getsockname(movedFD)
 	require.NoError(t, err)
-	gclisa := func() unix.Sockaddr {
-		sc.Lock()
-		defer sc.Unlock()
-		return sc.gclisa
-	}
+	moved := timestamp.SockaddrToAddrPort(movedSA)
 	require.Eventually(t, func() bool {
-		if timestamp.SockaddrToPort(gclisa()) == timestamp.SockaddrToPort(moved) {
+		if _, gaddr := sc.Addrs(); gaddr == moved {
 			return true
 		}
 		_ = unix.Sendto(movedFD, req, 0, serverAddr)
 		return false
 	}, time.Second, 100*time.Millisecond, "a ptping refresh must send announce to the new ephemeral port")
-	require.Equal(t, timestamp.SockaddrToPort(moved), timestamp.SockaddrToPort(sc.Eclisa()))
+	eaddr, _ := sc.Addrs()
+	require.Equal(t, moved, eaddr)
 	require.True(t, home.FindSubscription(client, ptp.MessageDelayReq) == sc, "a refresh must keep the subscription")
 }
 
-func BenchmarkHandleEventMessagesDelayReq(b *testing.B) {
-	s, serverAddr := eventServer(b)
-	clientFD := loopbackSocket(b)
-	defer unix.Close(clientFD)
+// eventServerDelayReq returns a client socket whose DELAY_REQ req to serverAddr the server queues on queue
+func eventServerDelayReq(tb testing.TB) (clientFD int, req []byte, serverAddr unix.Sockaddr, queue chan *SubscriptionClient) {
+	tb.Helper()
+	s, serverAddr := eventServer(tb)
+	clientFD = loopbackSocket(tb)
+	tb.Cleanup(func() { unix.Close(clientFD) })
 	client := ptp.PortIdentity{ClockIdentity: 5678, PortNumber: 1}
-	queue := s.findWorker(client, 0).queue
-	req := delayReq(b, client, 0)
+	queue = s.findWorker(client, 0).queue
+	req = delayReq(tb, client, 0)
 
 	// resend until acted on: before the kernel turns RX stamping on, packets arrive unstamped and are dropped
-	require.Eventually(b, func() bool {
+	require.Eventually(tb, func() bool {
 		_ = unix.Sendto(clientFD, req, 0, serverAddr)
 		select {
 		case <-queue:
@@ -185,6 +185,11 @@ func BenchmarkHandleEventMessagesDelayReq(b *testing.B) {
 			return false
 		}
 	}, time.Second, 20*time.Millisecond)
+	return clientFD, req, serverAddr, queue
+}
+
+func BenchmarkHandleEventMessagesDelayReq(b *testing.B) {
+	clientFD, req, serverAddr, queue := eventServerDelayReq(b)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -414,7 +419,7 @@ func TestHandleSighup(t *testing.T) {
 
 	s.sw[0] = newSendWorker(0, s.Config, s.Stats)
 	s.sw[1] = newSendWorker(0, s.Config, s.Stats)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	scA := NewSubscriptionClient(s.sw[0].queue, s.sw[0].signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Second, time.Now().Add(time.Minute))
 	scS := NewSubscriptionClient(s.sw[1].queue, s.sw[1].signalingQueue, sa, sa, ptp.MessageSync, c, time.Second, time.Now().Add(time.Minute))
 	s.sw[0].RegisterSubscription(clipi, ptp.MessageAnnounce, scA)

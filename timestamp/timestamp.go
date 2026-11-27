@@ -24,6 +24,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"strconv"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -189,6 +190,16 @@ func ReadPacketWithCMsgBuf(connFd int, buf, oob []byte) (int, int, unix.Sockaddr
 	return bbuf, boob, saddr, nil
 }
 
+// ReadPacketWithCMsgAddrPort is ReadPacketWithCMsgBuf for UDP sockets that returns the sender by value,
+// so reading a packet does not allocate. An IPv6 scope ID is returned as the numeric zone of the address.
+func ReadPacketWithCMsgAddrPort(connFd int, buf, oob []byte) (int, int, netip.AddrPort, error) {
+	bbuf, boob, addr, err := recvmsgAddrPort(connFd, buf, oob)
+	if err != nil {
+		return 0, 0, netip.AddrPort{}, fmt.Errorf("failed to read packet: %w", err)
+	}
+	return bbuf, boob, addr, nil
+}
+
 // ReadRXTimestamp returns HW timestamp from CMSG buffer
 func ReadRXTimestamp(oob []byte, boob int) (time.Time, error) {
 	return socketControlMessageTimestamp(oob, boob)
@@ -242,6 +253,41 @@ func SockaddrToAddr(sa unix.Sockaddr) netip.Addr {
 		return netip.AddrFrom16(sa.Addr).Unmap()
 	}
 	return netip.Addr{}
+}
+
+// SockaddrToAddrPort converts socket address to a netip.AddrPort, keeping IPv4-mapped IPv6 addresses as they are
+func SockaddrToAddrPort(sa unix.Sockaddr) netip.AddrPort {
+	var ip netip.Addr
+	var port int
+	switch sa := sa.(type) {
+	case *unix.SockaddrInet4:
+		ip, port = netip.AddrFrom4(sa.Addr), sa.Port
+	case *unix.SockaddrInet6:
+		ip, port = addrFrom16(sa.Addr, sa.ZoneId), sa.Port
+	}
+	if !ip.IsValid() || port < 0 || port > math.MaxUint16 {
+		return netip.AddrPort{}
+	}
+	return netip.AddrPortFrom(ip, uint16(port))
+}
+
+// addrFrom16 keeps the scope of a link-local sender as a numeric zone, so replies can reach it
+func addrFrom16(ip [16]byte, scope uint32) netip.Addr {
+	addr := netip.AddrFrom16(ip)
+	if scope == 0 {
+		return addr
+	}
+	return addr.WithZone(strconv.FormatUint(uint64(scope), 10))
+}
+
+// ScopeID returns the IPv6 scope of an address read by ReadPacketWithCMsgAddrPort, or 0 if it has none
+func ScopeID(addr netip.Addr) uint32 {
+	zone := addr.Zone()
+	if zone == "" {
+		return 0
+	}
+	id, _ := strconv.ParseUint(zone, 10, 32)
+	return uint32(id)
 }
 
 // SockaddrToPort converts socket address to an IP

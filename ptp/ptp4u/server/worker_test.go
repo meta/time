@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"net"
+	"net/netip"
 	"testing"
 	"time"
 
@@ -56,7 +57,7 @@ func TestWorkerQueue(t *testing.T) {
 
 	interval := time.Millisecond
 	expire := time.Now().Add(time.Millisecond)
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 
 	scA := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, interval, expire)
 	for range 10 {
@@ -85,7 +86,8 @@ func TestWorkerQueue(t *testing.T) {
 	require.Equal(t, 0, len(w.signalingQueue))
 }
 
-func BenchmarkSendWorkerDelayReq(b *testing.B) {
+func sendWorkerDelayReq(tb testing.TB) (*sendWorker, *SubscriptionClient, int) {
+	tb.Helper()
 	c := &Config{
 		clockIdentity: ptp.ClockIdentity(1234),
 		StaticConfig: StaticConfig{
@@ -98,23 +100,30 @@ func BenchmarkSendWorkerDelayReq(b *testing.B) {
 	w := newSendWorker(0, c, stats.NewJSONStats(1))
 	go w.Start()
 
-	clientFD := loopbackSocket(b)
-	defer unix.Close(clientFD)
-	require.NoError(b, unix.SetsockoptTimeval(clientFD, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 100000}))
-	clientAddr, err := unix.Getsockname(clientFD)
-	require.NoError(b, err)
+	clientFD := loopbackSocket(tb)
+	tb.Cleanup(func() { unix.Close(clientFD) })
+	require.NoError(tb, unix.SetsockoptTimeval(clientFD, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 100000}))
+	clientSA, err := unix.Getsockname(clientFD)
+	require.NoError(tb, err)
+	clientAddr := timestamp.SockaddrToAddrPort(clientSA)
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, clientAddr, clientAddr, ptp.MessageDelayReq, c, time.Second,
 		time.Now().Add(time.Hour))
 	buf := make([]byte, timestamp.PayloadSizeBytes)
 
 	// software timestamps reject SCM_TS_OPT_ID, so the first request only flips the worker to the fallback path
-	require.Eventually(b, func() bool {
+	require.Eventually(tb, func() bool {
 		w.queue <- sc
 		_, err := unix.Read(clientFD, buf)
 		return err == nil
 	}, time.Second, time.Millisecond)
 	_, err = unix.Read(clientFD, buf)
-	require.NoError(b, err)
+	require.NoError(tb, err)
+	return w, sc, clientFD
+}
+
+func BenchmarkSendWorkerDelayReq(b *testing.B) {
+	w, sc, clientFD := sendWorkerDelayReq(b)
+	buf := make([]byte, timestamp.PayloadSizeBytes)
 
 	b.ReportAllocs()
 	for b.Loop() {
@@ -122,6 +131,20 @@ func BenchmarkSendWorkerDelayReq(b *testing.B) {
 		_, _ = unix.Read(clientFD, buf) // sync
 		_, _ = unix.Read(clientFD, buf) // announce
 	}
+}
+
+func TestSockaddrsTo(t *testing.T) {
+	var dst sockaddrs
+	require.Equal(t, &unix.SockaddrInet4{Addr: [4]byte{10, 0, 0, 1}, Port: 319}, dst.to(netip.MustParseAddrPort("10.0.0.1:319")))
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 320}, dst.to(netip.MustParseAddrPort("[::1]:320")))
+	// a link-local client is only reachable through the interface it came from
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{0xfe, 0x80, 15: 1}, Port: 319, ZoneId: 7}, dst.to(netip.MustParseAddrPort("[fe80::1%7]:319")))
+	require.Equal(t, &unix.SockaddrInet6{Addr: [16]byte{15: 1}, Port: 319}, dst.to(netip.MustParseAddrPort("[::1]:319")), "zone must not leak into the next destination")
+}
+
+func TestWithPort(t *testing.T) {
+	require.Equal(t, netip.MustParseAddrPort("[fe80::1%7]:320"), withPort(netip.MustParseAddrPort("[fe80::1%7]:4242"), 320))
+	require.False(t, withPort(netip.MustParseAddrPort("10.0.0.1:1"), 1<<16).IsValid())
 }
 
 func TestFindSubscription(t *testing.T) {
@@ -138,7 +161,7 @@ func TestFindSubscription(t *testing.T) {
 		clients: make(map[ptp.MessageType]map[ptp.PortIdentity]*SubscriptionClient),
 	}
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Millisecond, time.Now().Add(time.Second))
 
 	sp := ptp.PortIdentity{
@@ -166,7 +189,7 @@ func TestFindClients(t *testing.T) {
 		clients: make(map[ptp.MessageType]map[ptp.PortIdentity]*SubscriptionClient),
 	}
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	sc := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageAnnounce, c, time.Millisecond, time.Now().Add(time.Second))
 
 	sp := ptp.PortIdentity{
@@ -203,7 +226,7 @@ func TestInventoryClients(t *testing.T) {
 
 	w := newSendWorker(0, c, st)
 
-	sa := timestamp.IPToSockaddr(net.ParseIP("127.0.0.1"), 123)
+	sa := netip.MustParseAddrPort("127.0.0.1:123")
 	scS1 := NewSubscriptionClient(w.queue, w.signalingQueue, sa, sa, ptp.MessageSync, c, 10*time.Millisecond, time.Now().Add(time.Minute))
 	w.RegisterSubscription(clipi1, ptp.MessageSync, scS1)
 	go scS1.Start(context.Background())

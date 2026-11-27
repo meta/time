@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"time"
 	"unsafe"
 
@@ -89,6 +90,18 @@ func EnableTimestamps(ts Timestamp, connFd int, _ *net.Interface) error {
 		return fmt.Errorf("unrecognized timestamp type: %s", ts)
 	}
 	return nil
+}
+
+func recvmsgAddrPort(connFd int, buf, oob []byte) (int, int, netip.AddrPort, error) {
+	n, oobn, _, sa, err := unix.Recvmsg(connFd, buf, oob, 0)
+	if err != nil {
+		return 0, 0, netip.AddrPort{}, err
+	}
+	from := SockaddrToAddrPort(sa)
+	if !from.IsValid() {
+		return 0, 0, netip.AddrPort{}, fmt.Errorf("unsupported sender address %T", sa)
+	}
+	return n, oobn, from, nil
 }
 
 // EnableRXQueueOverflow is not implemented for darwin
