@@ -164,22 +164,6 @@ func TestWaitForHWTSSharesOneDeadlineAcrossEINTR(t *testing.T) {
 }
 
 // txTimestampSocket returns a socket with one SW TX timestamp per send, tagged with OPT_ID like ptp4u's
-func txTimestampSocket(tb testing.TB) (int, unix.Sockaddr) {
-	tb.Helper()
-	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
-	require.NoError(tb, err)
-	tb.Cleanup(func() { unix.Close(fd) })
-	require.NoError(tb, unix.Bind(fd, &unix.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}))
-	flags := unix.SOF_TIMESTAMPING_TX_SOFTWARE | unix.SOF_TIMESTAMPING_SOFTWARE |
-		unix.SOF_TIMESTAMPING_OPT_ID | unix.SOF_TIMESTAMPING_OPT_TSONLY
-	require.NoError(tb, unix.SetsockoptInt(fd, unix.SOL_SOCKET, timestamping, flags))
-	require.NoError(tb, unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_SELECT_ERR_QUEUE, 1))
-	// sending to ourselves keeps the receive queue drained by the test, not the kernel
-	sa, err := unix.Getsockname(fd)
-	require.NoError(tb, err)
-	return fd, sa
-}
-
 func BenchmarkReadTimeStampSeqIDBuf(b *testing.B) {
 	fd, sa := txTimestampSocket(b)
 	toob := make([]byte, ControlSizeBytes)
@@ -192,33 +176,6 @@ func BenchmarkReadTimeStampSeqIDBuf(b *testing.B) {
 		_, _ = unix.Read(fd, buf)
 		seq++
 	}
-}
-
-func rxSocketPair(tb testing.TB, network string) (int, int, unix.Sockaddr) {
-	tb.Helper()
-	lo := "127.0.0.1"
-	if network == "udp6" {
-		lo = "::1"
-	}
-	conn, err := net.ListenUDP(network, &net.UDPAddr{IP: net.ParseIP(lo)})
-	require.NoError(tb, err)
-	tb.Cleanup(func() { conn.Close() })
-	connFd, err := ConnFd(conn)
-	require.NoError(tb, err)
-	require.NoError(tb, EnableSWTimestampsRx(connFd))
-	require.NoError(tb, unix.SetNonblock(connFd, false))
-	serverAddr, err := unix.Getsockname(connFd)
-	require.NoError(tb, err)
-
-	domain := unix.AF_INET
-	if network == "udp6" {
-		domain = unix.AF_INET6
-	}
-	clientFd, err := unix.Socket(domain, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
-	require.NoError(tb, err)
-	tb.Cleanup(func() { unix.Close(clientFd) })
-	require.NoError(tb, unix.Bind(clientFd, IPToSockaddr(net.ParseIP(lo), 0)))
-	return connFd, clientFd, serverAddr
 }
 
 func TestReadPacketWithCMsgAddrPort(t *testing.T) {

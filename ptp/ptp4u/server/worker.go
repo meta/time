@@ -160,12 +160,16 @@ func (s *sendWorker) Start() {
 		attempts     int
 		txTS         time.Time
 		c            *SubscriptionClient
+		ok           bool
 		eaddr, gaddr netip.AddrPort
 	)
 
 	for {
 		select {
-		case c = <-s.queue:
+		case c, ok = <-s.queue:
+			if !ok {
+				return
+			}
 			eaddr, gaddr = c.Addrs()
 			switch c.subscriptionType {
 			case ptp.MessageSync:

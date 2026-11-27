@@ -98,7 +98,16 @@ func sendWorkerDelayReq(tb testing.TB) (*sendWorker, *SubscriptionClient, int) {
 		},
 	}
 	w := newSendWorker(0, c, stats.NewJSONStats(1))
-	go w.Start()
+	done := make(chan struct{})
+	go func() {
+		w.Start()
+		close(done)
+	}()
+	tb.Cleanup(func() {
+		// later tests write the TX timestamp settings this worker reads
+		close(w.queue)
+		<-done
+	})
 
 	clientFD := loopbackSocket(tb)
 	tb.Cleanup(func() { unix.Close(clientFD) })
