@@ -8,7 +8,7 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version: 1.26
-      - run: sudo apt-get install libpcap-dev libcap2-bin
+      - run: sudo apt-get update && sudo apt-get install libpcap-dev libcap2-bin
       - run: go build -v ./...
       # Fuzzing: `go test -fuzz` runs a single target per invocation, so iterate
       # over every fuzz function in each package (a package may define several).
