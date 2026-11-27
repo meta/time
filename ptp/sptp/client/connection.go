@@ -43,7 +43,7 @@ type UDPConnNoTS interface {
 // UDPConnWithTS describes the functionality we expect from a UDP connection that will allow us to read TX timestamps
 type UDPConnWithTS interface {
 	WriteToWithTS(b []byte, src, dst unix.Sockaddr, seq uint16) (time.Time, error)
-	ReadPacketBuf(buf, oob []byte) (int, int, unix.Sockaddr, error)
+	ReadPacketBuf(buf, oob []byte) (int, int, netip.AddrPort, error)
 	RXTimestamp(oob []byte, boob int) (time.Time, error)
 	Close() error
 	ConnFd() int
@@ -72,12 +72,11 @@ func (c *UDPConn) WriteTo(b []byte, addr unix.Sockaddr) (int, error) {
 
 // ReadPacketBuf reads bytes from underlying fd
 func (c *UDPConn) ReadPacketBuf(buf []byte) (int, netip.Addr, error) {
-	n, saddr, err := unix.Recvfrom(c.connFd, buf, 0)
+	n, _, from, err := timestamp.ReadPacketWithCMsgAddrPort(c.connFd, buf, nil)
 	if err != nil {
 		return 0, netip.Addr{}, err
 	}
-
-	return n, timestamp.SockaddrToAddr(saddr), err
+	return n, from.Addr().WithZone("").Unmap(), nil
 }
 
 // Close closes underlying fd
@@ -244,8 +243,8 @@ func pktInfo4Cmsg(addr *unix.SockaddrInet4, ifIndex int32) []byte {
 }
 
 // ReadPacketBuf reads a packet and its control messages from the underlying fd
-func (c *UDPConnTS) ReadPacketBuf(buf, oob []byte) (int, int, unix.Sockaddr, error) {
-	return timestamp.ReadPacketWithCMsgBuf(c.connFd, buf, oob)
+func (c *UDPConnTS) ReadPacketBuf(buf, oob []byte) (int, int, netip.AddrPort, error) {
+	return timestamp.ReadPacketWithCMsgAddrPort(c.connFd, buf, oob)
 }
 
 // RXTimestamp parses the hardware RX timestamp out of control messages already read

@@ -169,12 +169,12 @@ func (mr *MockUDPConnWithTSMockRecorder) WriteToWithTS(b, src, dst, seq any) *go
 }
 
 // ReadPacketBuf mocks base method.
-func (m *MockUDPConnWithTS) ReadPacketBuf(buf, oob []byte) (int, int, unix.Sockaddr, error) {
+func (m *MockUDPConnWithTS) ReadPacketBuf(buf, oob []byte) (int, int, netip.AddrPort, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReadPacketBuf", buf, oob)
 	ret0, _ := ret[0].(int)
 	ret1, _ := ret[1].(int)
-	ret2, _ := ret[2].(unix.Sockaddr)
+	ret2, _ := ret[2].(netip.AddrPort)
 	ret3, _ := ret[3].(error)
 	return ret0, ret1, ret2, ret3
 }

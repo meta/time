@@ -18,10 +18,12 @@ package client
 
 import (
 	"net"
+	"net/netip"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/facebook/time/timestamp"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
 )
@@ -83,5 +85,44 @@ func TestListenUDPPinnedSocketsShareReusePortGroup(t *testing.T) {
 	require.Equal(t, packets, total)
 	for i, n := range got {
 		require.Less(t, n, packets, "socket %d took every packet, the group collapsed: %v", i, got)
+	}
+}
+
+// stampedConnPair returns a UDPConnTS with software RX stamping and a socket that sends to it
+func stampedConnPair(tb testing.TB) (*UDPConnTS, int, unix.Sockaddr) {
+	tb.Helper()
+	fd, err := listenUDP(net.ParseIP("::1"), 0, "lo")
+	require.NoError(tb, err)
+	require.NoError(tb, timestamp.EnableSWTimestampsRx(fd))
+	conn := &UDPConnTS{UDPConn: UDPConn{connFd: fd}}
+	tb.Cleanup(func() { conn.Close() })
+	local, err := unix.Getsockname(fd)
+	require.NoError(tb, err)
+	clientFd, err := unix.Socket(unix.AF_INET6, unix.SOCK_DGRAM, unix.IPPROTO_UDP)
+	require.NoError(tb, err)
+	tb.Cleanup(func() { unix.Close(clientFd) })
+	return conn, clientFd, local
+}
+
+func TestReadPacketBuf(t *testing.T) {
+	conn, clientFd, local := stampedConnPair(t)
+	buf := make([]byte, timestamp.PayloadSizeBytes)
+	oob := make([]byte, timestamp.ControlSizeBytes)
+
+	require.NoError(t, unix.Sendto(clientFd, buf[:44], 0, local))
+	n, _, from, err := conn.ReadPacketBuf(buf, oob)
+	require.NoError(t, err)
+	require.Equal(t, 44, n)
+	require.Equal(t, netip.IPv6Loopback(), from.Addr())
+}
+
+func BenchmarkReadPacketBuf(b *testing.B) {
+	conn, clientFd, local := stampedConnPair(b)
+	buf := make([]byte, timestamp.PayloadSizeBytes)
+	oob := make([]byte, timestamp.ControlSizeBytes)
+	b.ReportAllocs()
+	for b.Loop() {
+		_ = unix.Sendto(clientFd, buf[:44], 0, local)
+		_, _, _, _ = conn.ReadPacketBuf(buf, oob)
 	}
 }

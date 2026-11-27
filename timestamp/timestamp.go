@@ -181,17 +181,8 @@ func ReadPacketWithRXTimestampBuf(connFd int, buf, oob []byte) (int, netip.AddrP
 	return bbuf, from, timestamp, nil
 }
 
-// ReadPacketWithCMsgBuf writes byte packet into provided packet and cmsg buffer, and returns number of bytes copied to the buffers
-func ReadPacketWithCMsgBuf(connFd int, buf, oob []byte) (int, int, unix.Sockaddr, error) {
-	bbuf, boob, _, saddr, err := unix.Recvmsg(connFd, buf, oob, 0)
-	if err != nil {
-		return 0, 0, nil, fmt.Errorf("failed to read packet: %w", err)
-	}
-	return bbuf, boob, saddr, nil
-}
-
-// ReadPacketWithCMsgAddrPort is ReadPacketWithCMsgBuf for UDP sockets that returns the sender by value,
-// so reading a packet does not allocate. An IPv6 scope ID is returned as the numeric zone of the address.
+// ReadPacketWithCMsgAddrPort reads a packet and control messages into buf/oob without allocating.
+// It returns byte counts and the sender, with an IPv6 scope ID represented as a numeric zone.
 func ReadPacketWithCMsgAddrPort(connFd int, buf, oob []byte) (int, int, netip.AddrPort, error) {
 	bbuf, boob, addr, err := recvmsgAddrPort(connFd, buf, oob)
 	if err != nil {
@@ -229,18 +220,6 @@ func AddrToSockaddr(ip netip.Addr, port int) unix.Sockaddr {
 		return &unix.SockaddrInet4{Port: port, Addr: ip.As4()}
 	}
 	return &unix.SockaddrInet6{Port: port, Addr: ip.As16()}
-}
-
-// SockaddrToAddr converts socket address to a netip.Addr
-// Somewhat copy from https://github.com/golang/go/blob/658b5e66ecbc41a49e6fb5aa63c5d9c804cf305f/src/net/udpsock_posix.go#L15
-func SockaddrToAddr(sa unix.Sockaddr) netip.Addr {
-	switch sa := sa.(type) {
-	case *unix.SockaddrInet4:
-		return netip.AddrFrom4(sa.Addr).Unmap()
-	case *unix.SockaddrInet6:
-		return netip.AddrFrom16(sa.Addr).Unmap()
-	}
-	return netip.Addr{}
 }
 
 // SockaddrToAddrPort converts socket address to a netip.AddrPort, keeping IPv4-mapped IPv6 addresses as they are
@@ -294,29 +273,6 @@ func (b *SockaddrBuf) Sockaddr(addr netip.AddrPort) unix.Sockaddr {
 	}
 	b.in6 = unix.SockaddrInet6{Addr: ip.As16(), Port: int(addr.Port()), ZoneId: scopeID(ip)}
 	return &b.in6
-}
-
-// SockaddrToPort converts socket address to an IP
-// Somewhat copy from https://github.com/golang/go/blob/658b5e66ecbc41a49e6fb5aa63c5d9c804cf305f/src/net/udpsock_posix.go#L15
-func SockaddrToPort(sa unix.Sockaddr) int {
-	switch sa := sa.(type) {
-	case *unix.SockaddrInet4:
-		return sa.Port
-	case *unix.SockaddrInet6:
-		return sa.Port
-	}
-	return 0
-}
-
-// NewSockaddrWithPort creates a new socket address with the same IP and new port
-func NewSockaddrWithPort(sa unix.Sockaddr, port int) unix.Sockaddr {
-	switch sa := sa.(type) {
-	case *unix.SockaddrInet4:
-		return &unix.SockaddrInet4{Addr: sa.Addr, Port: port}
-	case *unix.SockaddrInet6:
-		return &unix.SockaddrInet6{Addr: sa.Addr, Port: port}
-	}
-	return nil
 }
 
 // JoinMulticast joins a multicast group on the given connection.

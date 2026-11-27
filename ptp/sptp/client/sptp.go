@@ -358,7 +358,7 @@ func (p *SPTP) ptping(sourceIP netip.Addr, sourcePort int, response []byte, rxtx
 
 // handlePDelayReq responds to a Pdelay_Req message with Pdelay_Resp and Pdelay_Resp_Follow_Up
 // This implements the responder side of peer delay measurement for in-rack linearizability checks
-func (p *SPTP) handlePDelayReq(econn UDPConnWithTS, buf []byte, addr unix.Sockaddr, rxts time.Time) error {
+func (p *SPTP) handlePDelayReq(econn UDPConnWithTS, buf []byte, from netip.AddrPort, rxts time.Time) error {
 	if rxts.IsZero() {
 		return fmt.Errorf("no receive timestamp on Pdelay_Req")
 	}
@@ -378,7 +378,9 @@ func (p *SPTP) handlePDelayReq(econn UDPConnWithTS, buf []byte, addr unix.Sockad
 		return fmt.Errorf("marshaling Pdelay_Resp: %w", err)
 	}
 
-	t3, err := econn.WriteToWithTS(respBytes, nil, addr, seq)
+	// a link-local requester is only reachable through the scope it arrived on
+	var dst timestamp.SockaddrBuf
+	t3, err := econn.WriteToWithTS(respBytes, nil, dst.Sockaddr(from), seq)
 	if err != nil {
 		return fmt.Errorf("sending Pdelay_Resp: %w", err)
 	}
@@ -392,11 +394,14 @@ func (p *SPTP) handlePDelayReq(econn UDPConnWithTS, buf []byte, addr unix.Sockad
 		return fmt.Errorf("marshaling Pdelay_Resp_Follow_Up: %w", err)
 	}
 
-	if timestamp.SockaddrToPort(addr) == ptp.PortEvent {
+	if int(from.Port()) == ptp.PortEvent {
+		if ptp.PortGeneral < 0 || ptp.PortGeneral > math.MaxUint16 {
+			return fmt.Errorf("general port %d out of range", ptp.PortGeneral)
+		}
 		// Follow up packets have to go to General Port, not Event Port
-		addr = timestamp.NewSockaddrWithPort(addr, ptp.PortGeneral)
+		from = netip.AddrPortFrom(from.Addr(), uint16(ptp.PortGeneral))
 	}
-	if _, err := p.genConn.WriteTo(followUpBytes, addr); err != nil {
+	if _, err := p.genConn.WriteTo(followUpBytes, dst.Sockaddr(from)); err != nil {
 		return fmt.Errorf("sending Pdelay_Resp_Follow_Up: %w", err)
 	}
 
@@ -448,7 +453,7 @@ func (p *SPTP) RunListener(ctx context.Context) error {
 					return
 				}
 
-				addr = addr.Unmap()
+				addr = addr.WithZone("").Unmap()
 				log.Debugf("[%s] received packet on port 320, n = %v", addr, bbuf)
 
 				// Probe message type first
@@ -504,12 +509,12 @@ func (p *SPTP) RunListener(ctx context.Context) error {
 				buf := make([]byte, timestamp.PayloadSizeBytes)
 				oob := make([]byte, timestamp.ControlSizeBytes)
 				for {
-					bbuf, boob, addr, err := econn.ReadPacketBuf(buf, oob)
+					bbuf, boob, from, err := econn.ReadPacketBuf(buf, oob)
 					if err != nil {
 						doneChan <- err
 						return
 					}
-					ip := timestamp.SockaddrToAddr(addr)
+					ip := from.Addr().WithZone("").Unmap()
 					log.Debugf("[%s] received packet on port 319, n = %v", ip, bbuf)
 
 					msgType, err := ptp.ProbeMsgType(buf[:bbuf])
@@ -535,7 +540,7 @@ func (p *SPTP) RunListener(ctx context.Context) error {
 					// a peer replies to the port we probed from, so the follow-up lands here too
 					switch msgType {
 					case ptp.MessagePDelayReq:
-						if err := p.handlePDelayReq(econn, buf[:bbuf], addr, rxtx); err != nil {
+						if err := p.handlePDelayReq(econn, buf[:bbuf], from, rxtx); err != nil {
 							log.Warningf("[%s] handling Pdelay_Req: %v", ip, err)
 						}
 						continue
@@ -559,7 +564,7 @@ func (p *SPTP) RunListener(ctx context.Context) error {
 					if !found {
 						log.Warningf("[%s] ignoring packets from unknown server, trying ptping", ip)
 						// Try ptping
-						if err = p.ptping(ip, timestamp.SockaddrToPort(addr), buf, rxtx); err != nil {
+						if err = p.ptping(ip, int(from.Port()), buf, rxtx); err != nil {
 							log.Warningf("[%s] ptping error: %v", ip, err)
 						}
 						continue

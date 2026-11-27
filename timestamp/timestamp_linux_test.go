@@ -272,17 +272,6 @@ func BenchmarkReadPacketWithCMsgAddrPort(b *testing.B) {
 	}
 }
 
-func BenchmarkReadPacketWithCMsgBuf(b *testing.B) {
-	connFd, clientFd, serverAddr := rxSocketPair(b, "udp6")
-	buf := make([]byte, PayloadSizeBytes)
-	oob := make([]byte, ControlSizeBytes)
-	b.ReportAllocs()
-	for b.Loop() {
-		_ = unix.Sendto(clientFd, buf[:44], 0, serverAddr)
-		_, _, _, _ = ReadPacketWithCMsgBuf(connFd, buf, oob)
-	}
-}
-
 func Test_scmDataToTime(t *testing.T) {
 	hwData := []byte{
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,

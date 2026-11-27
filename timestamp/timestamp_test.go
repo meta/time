@@ -76,18 +76,6 @@ func TestAddrToSockaddr(t *testing.T) {
 	require.Equal(t, expectedSA6, sa6)
 }
 
-func TestSockaddrToPort(t *testing.T) {
-	ip4 := net.ParseIP("127.0.0.1")
-	ip6 := net.ParseIP("::1")
-	port := 123
-
-	sa4 := IPToSockaddr(ip4, port)
-	sa6 := IPToSockaddr(ip6, port)
-
-	require.Equal(t, port, SockaddrToPort(sa4))
-	require.Equal(t, port, SockaddrToPort(sa6))
-}
-
 func TestSockaddrToAddrPort(t *testing.T) {
 	for _, s := range []string{"127.0.0.1:123", "[::1]:123", "[::ffff:10.0.0.1]:320"} {
 		want := netip.MustParseAddrPort(s)
@@ -182,15 +170,4 @@ func TestTimestampMarshalText(t *testing.T) {
 	text, err = Timestamp(42).MarshalText()
 	require.Equal(t, errors.New("unknown timestamp type \"Unsupported\""), err)
 	require.Equal(t, "Unsupported", string(text))
-}
-
-func TestNewSockaddrWithPort(t *testing.T) {
-	oldSA := &unix.SockaddrInet4{Addr: [4]byte{1, 2, 3, 4}, Port: 4567}
-	newSA := NewSockaddrWithPort(oldSA, 8901)
-	newSA4 := newSA.(*unix.SockaddrInet4)
-	require.Equal(t, oldSA.Addr, newSA4.Addr)
-	require.Equal(t, 8901, newSA4.Port)
-	// changing the original should not change the new one
-	oldSA.Addr[0] = 42
-	require.NotEqual(t, oldSA.Addr, newSA4.Addr)
 }
